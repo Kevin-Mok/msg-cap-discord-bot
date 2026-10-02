@@ -162,7 +162,7 @@ class Store:
         self.connection = sqlite3.connect(path, timeout=5)
         try:
             version = self.connection.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3):
                 raise ValueError('Unsupported database schema; use the matching bot version or a separate config directory.')
             # Explicit BEGIN is required: sqlite3 does not start a transaction for DDL.
             self.connection.execute('BEGIN IMMEDIATE')
@@ -175,7 +175,7 @@ class Store:
                 self.connection.execute(statement)
             expected = {'meta': ['key', 'value'], 'users': ['id', 'name', 'sent'],
                         'events': ['id', 'user_id', 'retained'], 'status': ['id', 'channel_id']}
-            if version == 2:
+            if version >= 2:
                 expected['events'].append('active')
             for table, columns in expected.items():
                 if [row[1] for row in self.connection.execute(f'PRAGMA table_info({table})')] != columns:
@@ -186,8 +186,12 @@ class Store:
                 channel_id INTEGER NOT NULL, user_id INTEGER NOT NULL, cap INTEGER NOT NULL,
                 PRIMARY KEY (channel_id, user_id))''')
             self.connection.execute('CREATE TABLE IF NOT EXISTS resets (user_id INTEGER PRIMARY KEY, at TEXT NOT NULL)')
+            self.connection.execute('''CREATE TABLE IF NOT EXISTS exemptions (
+                channel_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+                PRIMARY KEY (channel_id, user_id))''')
             self.connection.execute('CREATE INDEX IF NOT EXISTS events_user_active ON events(user_id, active)')
-            for table, columns in {'overrides': ['channel_id', 'user_id', 'cap'], 'resets': ['user_id', 'at']}.items():
+            for table, columns in {'overrides': ['channel_id', 'user_id', 'cap'], 'resets': ['user_id', 'at'],
+                                   'exemptions': ['channel_id', 'user_id']}.items():
                 if [row[1] for row in self.connection.execute(f'PRAGMA table_info({table})')] != columns:
                     raise ValueError('Invalid database schema; restore a backup.')
             for user_id, at in self.connection.execute('SELECT * FROM resets'):
@@ -204,10 +208,12 @@ class Store:
                 UNION ALL SELECT 1 FROM status WHERE id <= 0 OR channel_id <= 0 OR typeof(channel_id) != 'integer'
                 UNION ALL SELECT 1 FROM overrides WHERE typeof(channel_id) != 'integer'
                 OR typeof(user_id) != 'integer' OR channel_id <= 0 OR user_id <= 0
-                OR typeof(cap) != 'integer' OR cap < 1 LIMIT 1''').fetchone()
+                OR typeof(cap) != 'integer' OR cap < 1
+                UNION ALL SELECT 1 FROM exemptions WHERE typeof(channel_id) != 'integer'
+                OR typeof(user_id) != 'integer' OR channel_id <= 0 OR user_id <= 0 LIMIT 1''').fetchone()
             if invalid:
                 raise ValueError('Invalid persisted counters or message IDs; restore a database backup.')
-            self.connection.execute('PRAGMA user_version=2')
+            self.connection.execute('PRAGMA user_version=3')
             self.connection.commit()
         except (sqlite3.Error, ValueError):
             self.connection.rollback()
@@ -275,6 +281,8 @@ class Tracker:
         self.retained: dict[int, dict[int, None]] = defaultdict(dict)
         self.owners = {}
         self.overrides = dict(store.connection.execute('SELECT user_id, cap FROM overrides WHERE channel_id=?', (channel_id,)))
+        self.exemptions = {uid for (uid,) in store.connection.execute(
+            'SELECT user_id FROM exemptions WHERE channel_id=?', (channel_id,))}
         self.resets = dict(store.connection.execute('SELECT user_id, at FROM resets'))
         for mid, uid, retained, active in store.connection.execute('SELECT * FROM events ORDER BY id'):
             self.seen.add(mid)
@@ -333,7 +341,8 @@ class Tracker:
             self.retained[user_id][message_id] = None
             self.owners[message_id] = user_id
             self.revision += 1
-            if sent > self.cap_for(user_id):
+            cap = self.cap_for(user_id)
+            if cap is not None and sent > cap:
                 while self.retained[user_id]:
                     candidate = self.choose(list(self.retained[user_id]))
                     try:
@@ -349,7 +358,9 @@ class Tracker:
                     break
             return True
 
-    def cap_for(self, user_id: int) -> int:
+    def cap_for(self, user_id: int) -> int | None:
+        if user_id in self.exemptions:
+            return None
         return self.overrides.get(user_id, self.cap)
 
     def reset_at(self, user_id: int) -> str | None:
@@ -360,7 +371,7 @@ class Tracker:
             return (self.day, tuple(sorted(self.resets.items())))
         return (self.day, self.reset_at(user_id))
 
-    async def set_user_cap(self, user_id: int, cap: int) -> int:
+    async def set_user_cap(self, user_id: int, cap: int) -> int | None:
         if type(cap) is not int or cap < 1:
             raise ValueError('Choose a positive daily limit.')
         async with self.lock:
@@ -369,20 +380,27 @@ class Tracker:
             with self.store.connection:
                 self.store.connection.execute('INSERT OR REPLACE INTO overrides VALUES (?, ?, ?)',
                                               (self.channel_id, user_id, cap))
+                self.store.connection.execute('DELETE FROM exemptions WHERE channel_id=? AND user_id=?',
+                                              (self.channel_id, user_id))
             self.overrides[user_id] = cap
+            self.exemptions.discard(user_id)
             self.revision += 1
             return old
 
-    async def clear_user_cap(self, user_id: int) -> int | None:
+    async def clear_user_cap(self, user_id: int) -> tuple[bool, int | None]:
         async with self.lock:
             self._rollover()
             old = self.overrides.get(user_id)
+            changed = user_id not in self.exemptions
             with self.store.connection:
                 self.store.connection.execute('DELETE FROM overrides WHERE channel_id=? AND user_id=?',
                                               (self.channel_id, user_id))
+                self.store.connection.execute('INSERT OR IGNORE INTO exemptions VALUES (?, ?)',
+                                              (self.channel_id, user_id))
             self.overrides.pop(user_id, None)
-            self.revision += int(old is not None)
-            return old
+            self.exemptions.add(user_id)
+            self.revision += int(changed or old is not None)
+            return changed, old
 
     async def reset(self, user_id: int | None = None, *, expected_window: tuple | None = None,
                     validate: Callable[[], Awaitable[None]] | None = None) -> None:
@@ -426,11 +444,12 @@ def render_dashboard(tracker: Tracker) -> list[str]:
             escaped = escaped.replace(char, '\\' + char)
         return escaped
     header = f'Daily messages · {tracker.day} · {tracker.tz.key}\n'
-    lines = [f'{clean(name)} ({uid}): {sent} sent · {retained} retained · cap {tracker.cap_for(uid)}'
+    lines = [f'{clean(name)} ({uid}): {sent} sent · {retained} retained · cap '
+             f'{tracker.overrides[uid]}'
              + (' · since reset' if tracker.reset_at(uid) else '') + '\n'
-             for uid, name, sent, retained in tracker.rows()]
+             for uid, name, sent, retained in tracker.rows() if uid in tracker.overrides]
     if not lines:
-        lines = ['No messages tracked today.\n']
+        lines = ['No messages from users with personal caps today.\n']
     chunks = []
     text = header
     for line in lines:
@@ -648,7 +667,8 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                     await reply(interaction, 'Choose a positive daily limit.')
                     return
                 old = await self.tracker.set_user_cap(user.id, limit)
-                await reply(interaction, f'Personal cap for {discord.utils.escape_markdown(user.display_name)}: **{old} → {limit}/day** in <#{settings.channel_id}>. Counts kept; applies to future messages. Use /cap_clear to restore the default.')
+                previous = f'{old}/day' if old is not None else 'unlimited'
+                await reply(interaction, f'Personal cap for {discord.utils.escape_markdown(user.display_name)}: **{previous} → {limit}/day** in <#{settings.channel_id}>. Counts kept; applies to future messages. Use /cap_clear to exempt them from caps.')
 
             @self.tree.command(name='cap_default', description='Change the default daily cap for this channel.')
             @app_commands.guild_only()
@@ -673,17 +693,16 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                     self.tracker.revision += 1
                 await reply(interaction, f'Channel default: **{old} → {limit}/day** in <#{settings.channel_id}>. Personal caps and counts kept. Applies to future messages.')
 
-            @self.tree.command(name='cap_clear', description='Remove a personal cap and use the channel default.')
+            @self.tree.command(name='cap_clear', description='Exempt a member from all message caps.')
             @app_commands.guild_only()
             @app_commands.default_permissions(manage_messages=True)
-            @app_commands.describe(user='Member or bot whose personal override you want to remove')
+            @app_commands.describe(user='Member or bot to exempt from message caps')
             async def cap_clear(interaction: discord.Interaction, user: discord.Member):
                 if not await self.authorize(interaction, moderator=True, target=user):
                     return
                 await interaction.response.defer(ephemeral=True)
-                old = await self.tracker.clear_user_cap(user.id)
-                changed = old is not None
-                text = f'Personal cap cleared: **{old} → {self.tracker.cap}/day** (channel default). Counts kept.' if changed else f'This member already uses the channel default: **{self.tracker.cap}/day**. Nothing changed.'
+                changed, old = await self.tracker.clear_user_cap(user.id)
+                text = f'Cap cleared: **{old if old is not None else "channel default"} → unlimited** for this member. Counts kept.' if changed else 'This member is already exempt from caps. Nothing changed.'
                 await reply(interaction, f'{discord.utils.escape_markdown(user.display_name)} in <#{settings.channel_id}>: {text}')
 
             @self.tree.command(name='cap_status', description='Check your message allowance or another member’s status.')
@@ -701,16 +720,19 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                     name, sent = tracker.users.get(uid, (target.display_name, 0))
                     retained = len(tracker.retained.get(uid, {}))
                     cap = tracker.cap_for(uid)
-                    source = 'personal override' if uid in tracker.overrides else 'channel default'
+                    source = 'cap exemption' if cap is None else ('personal override' if uid in tracker.overrides else 'channel default')
                     reset_at = tracker.reset_at(uid)
                     window = f'since reset <t:{int(datetime.fromisoformat(reset_at).timestamp())}:f>' if reset_at else f'today ({tracker.day})'
                     local = tracker.now().astimezone(tracker.tz)
                     midnight = datetime.combine(local.date() + timedelta(days=1), datetime.min.time(), tzinfo=tracker.tz)
+                    display_cap = f'{cap}/day' if cap is not None else 'Unlimited'
+                    remaining = str(max(0, cap - sent)) if cap is not None else 'unlimited'
                     text = (f'**{discord.utils.escape_markdown(name)} · {window}**\n'
-                            f'Channel: <#{settings.channel_id}>\nCap: **{cap}/day** · {source}\n'
-                            f'**{sent} sent · {retained} retained · {max(0, cap-sent)} remaining**\n'
-                            f'Next reset: <t:{int(midnight.timestamp())}:f> (<t:{int(midnight.timestamp())}:R>) · {tracker.tz.key}\n'
-                            'After the allowance is used, each new message replaces one random eligible message of yours.')
+                            f'Channel: <#{settings.channel_id}>\nCap: **{display_cap}** · {source}\n'
+                            f'**{sent} sent · {retained} retained · {remaining} remaining**\n'
+                            f'Next reset: <t:{int(midnight.timestamp())}:f> (<t:{int(midnight.timestamp())}:R>) · {tracker.tz.key}\n' +
+                            ('You are exempt from cap deletions.' if cap is None else
+                             'After the allowance is used, each new message replaces one random eligible message of yours.'))
                 await reply(interaction, text)
 
             @self.tree.command(name='cap_reset', description='Reset one member’s counters, or everyone’s; confirmation required.')
@@ -741,11 +763,11 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                     '**Moderators · Manage Messages required**\n'
                     '`/cap_user user:@member limit:25` — persistent personal cap.\n'
                     '`/cap_default limit:50` — default for members without an override.\n'
-                    '`/cap_clear user:@member` — restore the default.\n'
+                    '`/cap_clear user:@member` — exempt them from all caps.\n'
                     '`/cap_reset user:@member` — fresh counters for one member.\n'
                     '`/cap_reset` — fresh counters for everyone; confirmation required.\n\n'
                     f'Use commands in <#{settings.channel_id}>. Each message after your allowance replaces one random eligible message of yours, possibly the new one. '
-                    f'Counters reset at midnight in {settings.timezone_name}. Manual resets keep existing messages but exclude them from the new window. Personal caps persist until cleared.')
+                    f'Counters reset at midnight in {settings.timezone_name}. Manual resets keep existing messages but exclude them from the new window. Personal caps persist until changed or the member is exempted with /cap_clear.')
 
         async def delete_message(self, message_id: int) -> None:
             channel = self.channel

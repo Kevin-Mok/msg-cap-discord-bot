@@ -20,9 +20,9 @@ Each server has separate daily counts, default caps, personal overrides, reset w
 
 ## Daily behavior
 
-The default cap is **50** in **America/Toronto**; moderators can set personal overrides with `/cap_user`. Each member message (including other bot accounts) in the configured channel increases that user's daily sent count. Messages up to the effective cap are allowed. Each further message triggers one uniformly random deletion among that user's tracked messages from today, including the new message. Other users and yesterday's messages are never deletion candidates.
+The default cap is **50** in **America/Toronto**; moderators can set personal overrides with `/cap_user`. `/cap_clear` exempts the selected member from all caps until a moderator assigns a new personal cap. Each member message (including other bot accounts) in the configured channel increases that user's daily sent count. Messages up to the effective cap are allowed. Each further message triggers one uniformly random deletion among that user's tracked messages from today, including the new message. Other users and yesterday's messages are never deletion candidates.
 
-The scoreboard shows sent and retained counts separately, such as `Alice: 53 sent · 50 retained · cap 50`. Deletions reduce retained count, not sent count. Edits, this bot’s own messages, webhooks, direct messages, and other channels do not count. Other bot accounts can be selected in `/cap_user`, `/cap_status`, `/cap_reset`, and `/cap_clear` and follow the same cap rules.
+The scoreboard shows only users with an explicit personal cap, with sent and retained counts such as `Alice: 53 sent · 50 retained · cap 50`. Users with only the channel default and users cleared from caps are omitted. Deletions reduce retained count, not sent count. Edits, this bot’s own messages, webhooks, direct messages, and other channels do not count. Other bot accounts can be selected in `/cap_user`, `/cap_status`, `/cap_reset`, and `/cap_clear` and follow the same cap rules.
 
 The bot replaces its status batch after activity, at most once every five seconds. This returns the scoreboard near the bottom; Discord cannot permanently anchor a message there. Large scoreboards use multiple messages. At local midnight, tracking and the displayed day reset without deleting yesterday's human messages.
 
@@ -101,13 +101,13 @@ Use cap/status/reset commands in **this server’s configured text channel**. `/
 | `/cap_help` | Everyone | Show command examples and explain random replacement and reset. |
 | `/cap_user user:@Alice limit:25` | Moderators | Save a personal cap; report the previous and new effective limits. |
 | `/cap_default limit:50` | Moderators | Change and save the channel default immediately; personal overrides remain. |
-| `/cap_clear user:@Alice` | Moderators | Remove Alice's override and use the channel default; report if no override existed. |
+| `/cap_clear user:@Alice` | Moderators | Remove Alice's personal cap and exempt her from all caps until `/cap_user` assigns one. |
 | `/cap_reset user:@Alice` | Moderators | Ask for confirmation to start Alice's accounting again. |
 | `/cap_reset` | Moderators | Ask for confirmation to start accounting again for everyone in the monitored channel. |
 
 Moderators need **Manage Messages in this channel** or **Administrator**. Runtime checks enforce this even if server command settings allow broader command visibility. Other channels receive a private response directing the requester to the configured channel; DMs are unsupported. Caps must be positive integers. Other bot accounts can be selected; this bot itself is excluded to protect its scoreboard and replies.
 
-A personal cap takes priority over the channel default and survives midnight/restarts until cleared. Changing a cap preserves counts and never immediately deletes messages. A remaining allowance of zero means each additional message triggers one random replacement; it does not block sending. Lowering a cap does not bulk-delete earlier messages.
+A personal cap takes priority over the channel default and survives midnight/restarts until cleared. `/cap_clear` exempts the member from cap enforcement and persists across restarts. Changing a cap preserves counts and never immediately deletes messages. A remaining allowance of zero means each additional message triggers one random replacement; it does not block sending. Lowering a cap does not bulk-delete earlier messages.
 
 Reset confirmations explain their exact scope and offer **Reset counters** and **Cancel** for 30 seconds. Only the requester can confirm, permissions are checked again, and expired or already-used confirmations cannot execute. A reset leaves existing Discord messages in place and excludes them from subsequent random deletions. The new window displays **since reset**, survives restart, and returns to normal daily accounting at local midnight. Reset never changes caps or personal overrides.
 
@@ -131,7 +131,7 @@ Run these commands from the project directory:
 - `--invite` authenticates using the saved token and prints this bot’s server invite URL. It does not connect the Gateway, start moderation, or open the quota database.
 - `--help` lists supported CLI options.
 
-CLI setup changes require a restart and supply login/initial defaults. Existing servers keep their own settings: use `/cap_channel` and `/cap_default` in Discord to change them. A server channel change resets only its current daily quota scope. Lowering the cap does not bulk-delete existing messages; each further over-cap send still triggers one deletion. A channel change leaves the old status batch for manual cleanup in the old channel. Follow [the live smoke checklist](docs/smoke-tests.md), then restore the default with `/cap_default limit:50` and clear any test personal overrides with `/cap_clear`. CLI setup remains available while the bot is stopped.
+CLI setup changes require a restart and supply login/initial defaults. Existing servers keep their own settings: use `/cap_channel` and `/cap_default` in Discord to change them. A server channel change resets only its current daily quota scope. Lowering the cap does not bulk-delete existing messages; each further over-cap send still triggers one deletion. A channel change leaves the old status batch for manual cleanup in the old channel. Follow [the live smoke checklist](docs/smoke-tests.md), then restore the default with `/cap_default limit:50` and assign test members' intended cap with `/cap_user` after using `/cap_clear`. CLI setup remains available while the bot is stopped.
 
 ## Reliability and limits
 

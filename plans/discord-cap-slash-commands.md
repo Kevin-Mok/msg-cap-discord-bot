@@ -5,14 +5,14 @@ Add /cap_user, /cap_default, /cap_clear, /cap_status, /cap_reset, /cap_help to t
 
 ## Atomic steps
 - [x] Write defining tests for caps, resets, migration, command registration, permissions and confirmation lifecycle; observe RED.
-- [x] Migrate SQLite v1 to v2: retained/dedup events gain active-window flag; persistent channel/user overrides and current-scope reset markers. Preserve existing counts and status IDs.
+- [x] Migrate SQLite v1 to v3: retained/dedup events gain active-window flag; persistent channel/user overrides, reset markers, and per-channel cap exemptions. Preserve existing counts and status IDs.
 - [x] Add locked runtime cap/reset methods, config default persistence, since-reset labels and effective cap display.
 - [x] Add native slash commands, guarded guild synchronization, ephemeral errors, confirmation view, and prompt acknowledgment.
 - [x] Verify full suite, type checking, compilation and script syntax; independent review.
 - [x] Update README/smoke checks and record exact evidence and limitations.
 
 ## Decisions
-Default cap remains in config.json, shared by CLI setup and /cap_default. Overrides are scoped by channel and survive midnight. Reset marks existing events inactive (dedup retained) and starts a fresh window; old messages are neither counted nor deletion candidates. Midnight prunes all daily events/reset markers but keeps overrides. Registration occurs once after valid channel resolution, with no global sync. All mutating commands defer before acquiring the tracker lock. Invalid permissions/channel/day or repeated/expired confirmation causes no mutation.
+Default cap remains in config.json, shared by CLI setup and /cap_default. Overrides and cap exemptions are scoped by channel and survive midnight. `/cap_clear` removes a personal override and exempts that member from cap enforcement until `/cap_user` assigns a new cap. Reset marks existing events inactive (dedup retained) and starts a fresh window; old messages are neither counted nor deletion candidates. Midnight prunes all daily events/reset markers but keeps overrides and exemptions. Registration occurs once after valid channel resolution, with no global sync. All mutating commands defer before acquiring the tracker lock. Invalid permissions/channel/day or repeated/expired confirmation causes no mutation.
 
 ## Acceptance
 Run `.venv/bin/python -m unittest discover -s tests -v`, type checker, compilation, and shell syntax checks. Test migration of an actual v1 fixture, cap/default persistence, replay of reset IDs, midnight, per-user/channel isolation, actual registered names/options, no-op and error feedback, permission enforcement, confirmation ownership/cancel/expiry/replay, and reconnect sync-once. Manual slash tests live in docs/smoke-tests.md; real Discord remains unverified without credentials.
@@ -35,3 +35,8 @@ Schema v2 is forward-only for this change; back up the SQLite file with the bot 
 
 Suggested Conventional Commit: `feat: add Discord cap management slash commands`.
 Accepted paste-ready handoff: [slash command prompt](../prompts/discord-cap-slash-commands.md).
+
+## Follow-up correction — 2026-10-02
+`/cap_clear` now removes a personal override and persists a per-channel exemption, so the selected member is not subject to the default cap either. `/cap_user` removes that exemption when a moderator assigns a new personal cap. Status displays unlimited. The dashboard lists only users with explicit personal caps; users who inherit the channel default or are exempt are omitted. SQLite schema version 3 adds the exemption table and migrates existing v2 databases on startup.
+
+Verification for this correction: `.venv/bin/python -m unittest discover -s tests -v` — 97 tests passed. `UV_CACHE_DIR=/tmp/messagecap-uv-cache PYRIGHT_PYTHON_CACHE_DIR=/tmp/messagecap-pyright-cache uvx pyright bot.py guild_bot.py --pythonpath .venv/bin/python` — zero errors, warnings, or informations. Python compilation with SyntaxWarnings as errors, Bash syntax checks, and `git diff --check` passed. Live Discord behavior remains for the documented manual smoke check.

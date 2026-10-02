@@ -154,6 +154,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         async def remove(message_id):
             live.pop(message_id, None)
         dash = bot.Dashboard(self.store, self.engine, send, remove, monotonic=lambda: clock[0])
+        await self.engine.set_user_cap(7, 50)
         await self.send_messages(1)
         await dash.refresh()
         self.assertIn('1 sent', next(iter(live.values())))
@@ -191,6 +192,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
     async def test_dashboard_splits_long_output_at_discord_limit(self):
         for i in range(100):
             await self.engine.process(i + 1, i + 10, 'User' + 'x' * 100, self.now)
+            await self.engine.set_user_cap(i + 10, 50)
         chunks = bot.render_dashboard(self.engine)
         self.assertTrue(all(len(text) <= 2000 for text in chunks))
         self.assertEqual(sum(text.count('1 sent') for text in chunks), 100)
@@ -363,7 +365,7 @@ class TransportRecoveryTests(DiscordFixture):
         clock[0] = 5
         await self.client.dashboard.refresh()
         self.assertEqual(len(live), 1)
-        self.assertIn('No messages tracked today', next(iter(live.values())))
+        self.assertIn('No messages from users with personal caps today', next(iter(live.values())))
 
     async def test_unready_adapter_rejects_operations_actionably(self):
         with self.assertRaises(bot.DeleteFailed):

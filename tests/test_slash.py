@@ -28,6 +28,14 @@ class CapStateTests(unittest.IsolatedAsyncioTestCase):
     async def send(self, mid, uid=7):
         await self.engine.process(mid, uid, 'Alice', self.now)
 
+    async def test_dashboard_lists_only_personal_caps(self):
+        await self.send(1, 7)
+        await self.send(2, 8)
+        await self.engine.set_user_cap(7, 4)
+        lines = '\n'.join(bot.render_dashboard(self.engine))
+        self.assertIn('7): 1 sent · 1 retained · cap 4', lines)
+        self.assertNotIn('(8):', lines)
+
     async def test_personal_override_controls_deletion_and_survives_midnight(self):
         self.assertTrue(hasattr(self.engine, 'set_user_cap'), 'Personal cap API missing')
         await self.engine.set_user_cap(7, 1)
@@ -39,9 +47,18 @@ class CapStateTests(unittest.IsolatedAsyncioTestCase):
         self.now = datetime(2026, 10, 3, 16, tzinfo=timezone.utc)
         await self.engine.rollover()
         self.assertEqual(self.engine.cap_for(7), 1)
-        self.assertTrue(await self.engine.clear_user_cap(7))
-        self.assertFalse(await self.engine.clear_user_cap(7))
-        self.assertEqual(self.engine.cap_for(7), 50)
+        self.assertEqual(await self.engine.clear_user_cap(7), (True, 1))
+        self.assertIsNone(self.engine.cap_for(7))
+        self.assertEqual(await self.engine.clear_user_cap(7), (False, None))
+        await self.send(4)
+        self.assertEqual(self.deleted, [1])
+        self.store.close()
+        self.store = bot.Store(self.path)
+        self.engine = bot.Tracker(self.store, 123, 50, 'America/Toronto', now=lambda: self.now,
+                                  delete=self.engine.delete)
+        self.assertIsNone(self.engine.cap_for(7))
+        self.assertIsNone(await self.engine.set_user_cap(7, 3))
+        self.assertEqual(self.engine.cap_for(7), 3)
 
     async def test_reset_excludes_old_candidates_preserves_dedup_and_other_user(self):
         self.assertTrue(hasattr(self.engine, 'reset'), 'Reset API missing')
@@ -112,10 +129,35 @@ class MigrationTests(unittest.TestCase):
             connection.close()
             store = bot.Store(path)
             try:
-                self.assertEqual(store.connection.execute('PRAGMA user_version').fetchone()[0], 2)
+                self.assertEqual(store.connection.execute('PRAGMA user_version').fetchone()[0], 3)
                 self.assertEqual(store.connection.execute('SELECT sent FROM users').fetchone()[0], 2)
                 self.assertEqual(store.status_ids(), [(42, 123)])
                 self.assertEqual(store.connection.execute('SELECT count(*) FROM events WHERE active=1').fetchone()[0], 2)
+            finally:
+                store.close()
+
+    def test_v2_upgrade_creates_exemptions_and_preserves_personal_caps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'data.sqlite3'
+            connection = sqlite3.connect(path)
+            connection.executescript('''
+                CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, sent INTEGER NOT NULL);
+                CREATE TABLE events (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, retained INTEGER NOT NULL,
+                                     active INTEGER NOT NULL DEFAULT 1);
+                CREATE TABLE status (id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL);
+                CREATE TABLE overrides (channel_id INTEGER NOT NULL, user_id INTEGER NOT NULL, cap INTEGER NOT NULL,
+                                        PRIMARY KEY (channel_id, user_id));
+                CREATE TABLE resets (user_id INTEGER PRIMARY KEY, at TEXT NOT NULL);
+                INSERT INTO overrides VALUES (123, 7, 3);
+                PRAGMA user_version=2;
+            ''')
+            connection.close()
+            store = bot.Store(path)
+            try:
+                self.assertEqual(store.connection.execute('PRAGMA user_version').fetchone()[0], 3)
+                self.assertEqual(store.connection.execute('SELECT user_id, cap FROM overrides').fetchall(), [(7, 3)])
+                self.assertEqual(store.connection.execute('SELECT count(*) FROM exemptions').fetchone()[0], 0)
             finally:
                 store.close()
 
@@ -226,10 +268,18 @@ class SlashTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('personal override', inter.messages[-1]['content'])
         self.assertTrue(inter.messages[-1]['ephemeral'])
         await self.invoke('cap_clear', FakeInteraction(self.admin), user=self.user)
-        self.assertEqual(self.client.tracker.cap_for(7), 10)
+        self.assertIsNone(self.client.tracker.cap_for(7))
+        status = FakeInteraction(self.user)
+        await self.invoke('cap_status', status)
+        self.assertIn('Unlimited', status.messages[-1]['content'])
+        await self.client.tracker.process(1, 7, 'Alice', datetime.now(timezone.utc))
+        dashboard = '\n'.join(bot.render_dashboard(self.client.tracker))
+        self.assertNotIn('(7):', dashboard)
         no_op = FakeInteraction(self.admin)
         await self.invoke('cap_clear', no_op, user=self.user)
         self.assertIn('already', no_op.messages[-1]['content'].lower())
+        await self.invoke('cap_user', FakeInteraction(self.admin), user=self.user, limit=3)
+        self.assertEqual(self.client.tracker.cap_for(7), 3)
 
     async def test_reset_confirm_owner_cancel_expiry_and_repeat(self):
         await self.client.tracker.process(1, 7, 'Alice', datetime.now(timezone.utc))
@@ -370,7 +420,7 @@ class SlashTests(unittest.IsolatedAsyncioTestCase):
             clear = asyncio.create_task(self.invoke('cap_clear', inter, user=self.user))
             await asyncio.sleep(0)
         await asyncio.gather(change, clear)
-        self.assertIn('4 → 50', inter.messages[-1]['content'])
+        self.assertIn('4 → unlimited', inter.messages[-1]['content'])
 
 
 class MigrationAtomicTests(unittest.TestCase):

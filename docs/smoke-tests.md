@@ -23,7 +23,7 @@ Run these in **#twitter-cap**, provided this is the configured channel. Use slas
 8. Action: /cap_reset user:@you
    Expected: Click **Cancel** this time. Status remains 4 sent and 3 retained.
 9. Action: /cap_clear user:@you
-   Expected: Your personal test override is removed, restoring the channel default (normally 50). If you had a personal override before this test, restore that original limit with /cap_user instead.
+   Expected: Your personal test override is removed and you become exempt from all caps. You disappear from the scoreboard; users without explicit personal caps are not listed. If you had a personal override before this test, restore that original limit with /cap_user instead.
 
 Pass means the private commands respond, the sticky scoreboard refreshes, and the fourth new message causes exactly one same-user deletion. Online presence alone does not prove these behaviors. This walkthrough has not yet been marked live-passed; record the actual Discord outcome.
 
@@ -96,8 +96,8 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
   Expected: Alice remains capped at 2. The other member inherits default 4 immediately. Lowering any cap does not delete messages immediately; the next over-cap send causes exactly one eligible same-user deletion.
 - Action: Stop and restart with `./scripts/run.sh`, then inspect both statuses.
   Expected: The personal override and channel default persist. No token prompt occurs. The server’s saved config under guild_data retains default 4; global CLI defaults do not overwrite it.
-- Action: Start the bot, run `/cap_clear user:@Alice` twice, and inspect Alice's status.
-  Expected: The first invocation restores default 4 without resetting counts. The second reports that no personal override exists. Status identifies the default as the cap source.
+- Action: Start the bot, run `/cap_clear user:@Alice` twice, and inspect Alice's status and scoreboard.
+  Expected: The first invocation exempts Alice from all caps without resetting counts. Her status says unlimited and she disappears from the scoreboard. Users with only the default cap are also omitted from the scoreboard. The second reports that Alice is already exempt. `/cap_user` can assign her a cap again.
 
 ## Reset confirmation and isolation
 
@@ -159,7 +159,7 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
 ## Restore normal configuration
 
 - Action: Run `/cap_default limit:50`, then `/cap_clear user:@Alice` and `/cap_clear user:@Bob` for any test overrides.
-  Expected: Status reports the channel default of 50 for test members. Counts remain until reset or midnight.
+  Expected: Status reports unlimited for test members explicitly cleared earlier; other members use the channel default of 50. Counts remain until reset or midnight.
 - Action: Stop the bot with Ctrl+C.
   Expected: The process exits cleanly.
 - Action: .venv/bin/python bot.py --check
