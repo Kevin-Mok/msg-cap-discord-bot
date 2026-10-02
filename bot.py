@@ -352,7 +352,7 @@ class Tracker:
             self.owners[message_id] = user_id
             self.revision += 1
             cap = self.cap_for(user_id)
-            if cap is not None and sent > cap:
+            if cap is not None and sent > cap and len(self.retained[user_id]) > 1:
                 while self.retained[user_id]:
                     candidate = self.choose(list(self.retained[user_id]))
                     try:
@@ -736,7 +736,7 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                             f'**{sent} sent · {retained} retained · {remaining} remaining**\n'
                             f'Next reset: <t:{int(midnight.timestamp())}:f> (<t:{int(midnight.timestamp())}:R>) · {tracker.tz.key}\n' +
                             ('You are exempt from cap deletions.' if cap is None else
-                             'After the allowance is used, each new message replaces one random eligible message of yours.'))
+                             'After the allowance is used, each new message replaces one random eligible message of yours. If it is your only tracked message, it stays.'))
                 await reply(interaction, text)
 
             @self.tree.command(name='cap_reset', description='Reset one member’s counters, or everyone’s; confirmation required.')
@@ -770,7 +770,7 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                     '`/cap_clear user:@member` — exempt them from all caps.\n'
                     '`/cap_reset user:@member` — fresh counters for one member.\n'
                     '`/cap_reset` — fresh counters for everyone; confirmation required.\n\n'
-                    f'Use commands in <#{settings.channel_id}>. Each message after your allowance replaces one random eligible message of yours, possibly the new one. '
+                    f'Use commands in <#{settings.channel_id}>. Each message after your allowance replaces one random eligible message of yours, possibly the new one. If it is your only tracked message, it stays. '
                     f'Counters reset at midnight in {settings.timezone_name}. Manual resets keep existing messages but exclude them from the new window. Personal caps persist until changed or the member is exempted with /cap_clear.')
 
         async def delete_message(self, message_id: int) -> None:

@@ -86,6 +86,16 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.row(), (7, 'Alice', 3, 1))
         self.assertEqual(self.deleted, [2])
 
+    async def test_over_cap_message_is_kept_when_no_old_candidate_remains(self):
+        self.engine.cap = 1
+        await self.send_messages(1)
+        await self.engine.removed([1])
+
+        await self.send_messages(1, start=2)
+
+        self.assertEqual(self.row(), (7, 'Alice', 2, 1))
+        self.assertEqual(self.deleted, [])
+
     async def test_duplicate_deleted_event_is_not_counted_again(self):
         self.engine.cap = 1
         await self.send_messages(2)

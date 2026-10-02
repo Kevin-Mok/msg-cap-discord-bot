@@ -1,6 +1,9 @@
 # Count other bot accounts
 
 - [x] Format the sticky daily scoreboard as a concise tweet summary with sent, retained, and cap counts; omit date, timezone, display name, and account ID.
+- [x] Preserve an over-cap message when it is the account's only remaining tracked message; cover this after an external/source cleanup.
+
+Latest verification (2026-10-02): `.venv/bin/python -m unittest discover -s tests -q` passed 102 tests, including the empty-candidate regression. `git diff --check` passed.
 
 - [x] RED: bot targets accepted; other bot messages counted and capped; own messages excluded.
 - [x] Allow bot members in cap/status/reset commands, excluding this bot itself. Keep webhook messages excluded and bootstrap control commands human-only.

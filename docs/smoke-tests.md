@@ -130,6 +130,8 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
   Expected: The bot target is accepted. One of its four messages is deleted; `/cap_status user:@OtherBot` shows 4 sent and 3 retained. Twitter Cap’s own replies remain excluded. Run `/cap_clear user:@OtherBot` afterward, or restore its prior override.
 - Action: Have any human member post an X status URL that causes SaucyBot to reply directly to the message.
   Expected: Once SaucyBot's reply arrives, the original human-authored message is deleted. SaucyBot's response remains. Replies from other bots, replies to another bot's message, and replies outside this channel do not trigger this cleanup.
+- Action: Set a member's cap to 1, ensure their only tracked message is removed (manually or by the SaucyBot reply cleanup), then send another message as that member.
+  Expected: Sent increases, and the new message remains as the only tracked message (`1 retained`). It is not selected for deletion when no older candidate remains.
 
 ## Sticky display and restart
 
