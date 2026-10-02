@@ -304,6 +304,76 @@ class DiscordAdapterTests(DiscordFixture):
         self.assertEqual(len(self.client.tracker.rows()), 1)
         self.assertEqual(self.client.tracker.rows()[0][2:], (3, 2))
 
+    async def test_bot_reply_deletes_referenced_human_message_after_response(self):
+        import discord
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        partial = SimpleNamespace(delete=AsyncMock())
+        self.client.channel = SimpleNamespace(get_partial_message=lambda message_id: partial)
+        source_author = SimpleNamespace(id=142822767497052161, display_name='Big B', bot=False)
+        source = SimpleNamespace(id=101, author=source_author)
+        channel = SimpleNamespace(id=123)
+        original = SimpleNamespace(id=101, channel=channel, guild=SimpleNamespace(), author=source_author,
+                                   webhook_id=None, created_at=datetime.now(timezone.utc))
+        reply = SimpleNamespace(id=102, channel=channel, guild=SimpleNamespace(),
+                                author=SimpleNamespace(id=647368715742216193, display_name='SaucyBot', bot=True),
+                                webhook_id=None, created_at=datetime.now(timezone.utc),
+                                reference=SimpleNamespace(message_id=101, channel_id=123, resolved=source),
+                                type=discord.MessageType.reply)
+        await self.client.process_message(original)
+        await self.client.process_message(reply)
+        partial.delete.assert_awaited_once()
+        await self.client.on_raw_message_delete(SimpleNamespace(channel_id=123, message_id=101))
+        self.assertEqual(self.client.tracker.rows(), [(142822767497052161, 'Big B', 1, 0),
+                                                       (647368715742216193, 'SaucyBot', 1, 1)])
+
+    async def test_bot_reply_does_not_delete_another_bot_or_cross_channel_reference(self):
+        import discord
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        partial = SimpleNamespace(delete=AsyncMock())
+        self.client.channel = SimpleNamespace(get_partial_message=lambda message_id: partial)
+        author = SimpleNamespace(id=8, display_name='Another bot', bot=True)
+        channel = SimpleNamespace(id=123)
+        source = SimpleNamespace(id=201, author=author)
+        reply = SimpleNamespace(id=202, channel=channel, guild=SimpleNamespace(),
+                                author=SimpleNamespace(id=647368715742216193, display_name='SaucyBot', bot=True),
+                                webhook_id=None, created_at=datetime.now(timezone.utc),
+                                reference=SimpleNamespace(message_id=201, channel_id=123, resolved=source),
+                                type=discord.MessageType.reply)
+        await self.client.process_message(reply)
+        reply.reference.channel_id = 123
+        reply.author = SimpleNamespace(id=12, display_name='Other bot', bot=True)
+        reply.id = 204
+        await self.client.process_message(reply)
+        reply.author = SimpleNamespace(id=647368715742216193, display_name='SaucyBot', bot=True)
+        reply.reference.channel_id = 999
+        reply.id = 203
+        await self.client.process_message(reply)
+        partial.delete.assert_not_awaited()
+
+    async def test_saucy_reply_deletes_any_users_referenced_message(self):
+        import discord
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        partial = SimpleNamespace(delete=AsyncMock())
+        self.client.channel = SimpleNamespace(get_partial_message=lambda message_id: partial)
+        author = SimpleNamespace(id=8008, display_name='Another user', bot=False)
+        channel = SimpleNamespace(id=123)
+        original = SimpleNamespace(id=301, channel=channel, guild=SimpleNamespace(), author=author,
+                                   webhook_id=None, created_at=datetime.now(timezone.utc))
+        reply = SimpleNamespace(id=302, channel=channel, guild=SimpleNamespace(),
+                                author=SimpleNamespace(id=647368715742216193, display_name='SaucyBot', bot=True),
+                                webhook_id=None, created_at=datetime.now(timezone.utc),
+                                reference=SimpleNamespace(message_id=301, channel_id=123,
+                                                         resolved=SimpleNamespace(id=301, author=author)),
+                                type=discord.MessageType.reply)
+        await self.client.process_message(original)
+        await self.client.process_message(reply)
+        partial.delete.assert_awaited_once()
+        await self.client.on_raw_message_delete(SimpleNamespace(channel_id=123, message_id=301))
+        self.assertEqual(self.client.tracker.rows()[0], (8008, 'Another user', 1, 0))
+
     async def test_discord_errors_are_translated_for_safe_retry(self):
         import discord
         from types import SimpleNamespace

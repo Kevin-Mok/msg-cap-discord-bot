@@ -28,6 +28,7 @@ VOICE_DEPENDENCY_NOTICES = {
     'PyNaCl is not installed, voice will NOT be supported',
     'davey is not installed, voice will NOT be supported',
 }
+REPLY_CLEANUP_BOT_ID = 647368715742216193
 
 
 class DiscordVoiceNoticeFilter(logging.Filter):
@@ -789,6 +790,34 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             except (discord.HTTPException, OSError, aiohttp.ClientError):
                 raise DeleteFailed() from None
 
+        async def cleanup_replied_user_message(self, message) -> None:
+            if (message.author.id != REPLY_CLEANUP_BOT_ID
+                    or getattr(message, 'type', None) != discord.MessageType.reply
+                    or message.channel.id != settings.channel_id):
+                return
+            reference = getattr(message, 'reference', None)
+            message_id = getattr(reference, 'message_id', None)
+            if reference is None or message_id is None or getattr(reference, 'channel_id', None) != settings.channel_id:
+                return
+            original = getattr(reference, 'resolved', None)
+            if original is None:
+                try:
+                    original = await message.channel.fetch_message(message_id)
+                except discord.NotFound:
+                    return
+                except (discord.HTTPException, OSError, aiohttp.ClientError):
+                    LOG.warning('Could not verify replied-to message %s; leaving it in place.', message_id)
+                    return
+            original_author = getattr(original, 'author', None)
+            if original_author is None or original_author.bot:
+                return
+            try:
+                await self.delete_message(message_id)
+            except MissingMessage:
+                pass
+            except DeleteFailed:
+                LOG.warning('Could not remove the replied-to source message %s after SaucyBot responded.', message_id)
+
         async def send_status(self, text: str) -> int:
             channel = self.channel
             if channel is None:
@@ -989,6 +1018,8 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                 LOG.error('Database write failed; stopping to avoid incorrect quota tracking. Check disk space and database access.')
                 self.startup_error = 'Database write failed.'
                 await self.close()
+                return
+            await self.cleanup_replied_user_message(message)
 
         async def on_raw_message_delete(self, payload):
             if payload.channel_id == settings.channel_id:
