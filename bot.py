@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone daily Discord message cap. Python 3.11+, discord.py only."""
+"""Standalone per-server daily Discord message cap. Python 3.11+, discord.py only."""
 
 import argparse
 import asyncio
@@ -17,7 +17,7 @@ import sqlite3
 import sys
 import tempfile
 import time
-from typing import Awaitable, Callable, Sequence
+from typing import Awaitable, Callable, Sequence, Self, cast
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -267,6 +267,7 @@ class Tracker:
         self.delete = delete
         self.lock = asyncio.Lock()
         self.revision = 0
+        self.retired = False
         self.day = self.today()
         self.store.scope(f'{channel_id}:{timezone_name}:{self.day}')
         self.users = {uid: (name, sent) for uid, name, sent in store.connection.execute('SELECT * FROM users')}
@@ -285,6 +286,8 @@ class Tracker:
         return self.now().astimezone(self.tz).date().isoformat()
 
     def _rollover(self) -> None:
+        if self.retired:
+            raise ValueError("Channel changed. Run the command again in the new channel.")
         day = self.today()
         if day != self.day:
             self.store.scope(f'{self.channel_id}:{self.tz.key}:{day}')
@@ -485,12 +488,13 @@ class Dashboard:
                 self.published = -1
 
 
-def create_client(settings: Settings, store: Store, *, config_path: Path | None = None):
+def create_client(settings: Settings, store: Store, *, config_path: Path | None = None, gateway=None):
     # Import only for live runtime; setup and core tests need no dependency.
     import discord
     import aiohttp
 
     from discord import app_commands
+    from discord.state import ConnectionState
 
     async def reply(interaction, content: str, **kwargs):
         send = interaction.followup.send if interaction.response.is_done() else interaction.response.send_message
@@ -597,6 +601,10 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             self.sync_lock = asyncio.Lock()
             self.last_manual_sync = float("-inf")
             self.register_commands()
+            if gateway is not None:
+                # Channel controllers never connect; the parent owns the shared Gateway.
+                self._connection = cast('ConnectionState[Self]', gateway._connection)
+                self.http = gateway.http
             self.tracker = Tracker(store, settings.channel_id, settings.cap, settings.timezone_name,
                                    delete=self.delete_message)
             self.dashboard = Dashboard(store, self.tracker, self.send_status, self.delete_message)
@@ -631,7 +639,7 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             @self.tree.command(name='cap_user', description='Set a personal daily message cap for a member.')
             @app_commands.guild_only()
             @app_commands.default_permissions(manage_messages=True)
-            @app_commands.describe(user='Human member whose daily cap you want to change', limit='Positive daily limit; takes effect on their next message')
+            @app_commands.describe(user='Member or bot whose daily cap you want to change', limit='Positive daily limit; takes effect on their next message')
             async def cap_user(interaction: discord.Interaction, user: discord.Member, limit: app_commands.Range[int, 1]):
                 if not await self.authorize(interaction, moderator=True, target=user):
                     return
@@ -668,7 +676,7 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             @self.tree.command(name='cap_clear', description='Remove a personal cap and use the channel default.')
             @app_commands.guild_only()
             @app_commands.default_permissions(manage_messages=True)
-            @app_commands.describe(user='Human member whose personal override you want to remove')
+            @app_commands.describe(user='Member or bot whose personal override you want to remove')
             async def cap_clear(interaction: discord.Interaction, user: discord.Member):
                 if not await self.authorize(interaction, moderator=True, target=user):
                     return
@@ -727,7 +735,8 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                 if not await self.authorize(interaction):
                     return
                 await reply(interaction,
-                    '**Daily message cap**\n'
+                    '**Daily message cap · this server**\n'
+                    '`/cap_channel channel:#channel` — set this server’s channel (Manage Server).\n'
                     '`/cap_status` — your allowance; choose a member to inspect theirs.\n'
                     '**Moderators · Manage Messages required**\n'
                     '`/cap_user user:@member limit:25` — persistent personal cap.\n'
@@ -1026,9 +1035,12 @@ def main() -> int:
             return 0
         store = Store(args.config.resolve().parent / 'data.sqlite3')
         if args.check:
-            print(f'OK: configuration/database valid; channel={settings.channel_id} cap={settings.cap} timezone={settings.timezone_name}')
+            from guild_bot import check_guild_data
+            guild_count = check_guild_data(args.config)
+            print(f'OK: configuration/database valid; channel={settings.channel_id} cap={settings.cap} timezone={settings.timezone_name}; saved servers={guild_count}')
             return 0
-        client = create_client(settings, store, config_path=args.config)
+        from guild_bot import create_guild_client
+        client = create_guild_client(settings, store, config_path=args.config)
         client.run(settings.token, log_handler=None)
         return 1 if client.startup_error else 0
     except (ValueError, OSError, sqlite3.Error):

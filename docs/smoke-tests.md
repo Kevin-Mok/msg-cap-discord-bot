@@ -30,7 +30,7 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
 ### Register commands from Discord
 
 - Action: After updating the code, restart once with Ctrl+C and `./scripts/run.sh`. As a member with Manage Server or Administrator, send `@Twitter Cap slash sync` in #twitter-cap, selecting the actual bot mention from Discord’s picker.
-  Expected: A public “Syncing slash commands…” reply changes to “Registered 6 slash commands” with their names. No ping occurs, the request does not increase your quota counters, and `/cap_help` becomes available. Message Content intent remains disabled.
+  Expected: A public “Syncing slash commands…” reply changes to “Registered 7 slash commands” with their names. No ping occurs, the request does not increase your quota counters, and `/cap_help` becomes available. Message Content intent remains disabled.
 - Action: Immediately send `@Twitter Cap sync`.
   Expected: A reply asks you to wait 30 seconds. No second registration occurs.
 - Action: Send the sync command as a member without Manage Server or Administrator.
@@ -39,7 +39,7 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
 ### If a step fails
 
 - **No slash commands:** use `@Twitter Cap slash sync` as described above. If there is no response, confirm the updated bot was restarted and you selected its real mention in the configured channel. If sync fails, use the reply’s invite link to re-authorize application commands and retry after 30 seconds. If sync succeeds but commands are hidden, reopen the command picker, allow Use Application Commands, and check server integration settings.
-- **Configured channel unavailable:** the bot stays online. Enter a replacement ID at its terminal prompt, or press Enter and send `@Twitter Cap channel here` in #twitter-cap as a member with Manage Server or Administrator. Expect a saved-channel confirmation and slash registration. If the old channel is working and you intentionally want to move it, stop the bot and use ./scripts/setup.sh.
+- **Configured channel unavailable:** the bot stays online. Enter a replacement ID at its terminal prompt, or press Enter and send `@Twitter Cap channel here` in #twitter-cap as a member with Manage Server or Administrator. Expect a saved-channel confirmation and slash registration. Use `/cap_channel channel:#channel` to move a working server channel too.
 - **No sticky scoreboard:** check the terminal for counter errors and allow View Channel and Send Messages in this channel.
 - **Fourth new message stays and none disappear:** check Manage Messages permission and the terminal's deletion errors. Check /cap_status confirms personal cap 3 and that the user reset succeeded.
 
@@ -65,7 +65,7 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
 - Action: With a dedicated test config, save an inaccessible channel ID and run `./scripts/run.sh`. Enter a valid replacement ID when prompted.
   Expected: The bot stays online, validates permissions, saves the replacement, starts its scoreboard and registers slash commands without a token prompt or restart. Invalid input prompts again.
 - Action: Repeat with an inaccessible channel, press Enter at the prompt, then as a server manager send `@Twitter Cap channel here` using a real bot mention in the desired text channel.
-  Expected: Public confirmation identifies the saved channel. `/cap_help` works; setup messages do not consume allowance. A second setup request says the channel is already configured.
+  Expected: Public confirmation identifies the saved channel. `/cap_help` works; setup messages do not consume allowance. A second request for the same channel reports it is already configured; a different valid channel changes only this server.
 - Action: Attempt setup as an ordinary member, or target a channel in another server or one missing Manage Messages permission.
   Expected: An actionable rejection; saved configuration remains unchanged.
 - Action: While the terminal prompt is waiting, complete setup in Discord, or stop with Ctrl+C.
@@ -76,7 +76,7 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
 ## Slash discovery and private feedback
 
 - Action: Invite/re-authorize the bot with the bot and applications.commands scopes; allow View Channel, Send Messages, Read Message History, and Manage Messages. Start the bot and type `/cap` in the configured text channel.
-  Expected: `/cap_user`, `/cap_default`, `/cap_clear`, `/cap_status`, `/cap_reset`, and `/cap_help` are registered for the server. Moderator command visibility follows Discord permissions. Message Content intent is not required.
+  Expected: `/cap_channel`, `/cap_user`, `/cap_default`, `/cap_clear`, `/cap_status`, `/cap_reset`, and `/cap_help` are registered for the server. Moderator command visibility follows Discord permissions. Message Content intent is not required.
 - Action: As an ordinary member with Use Application Commands, run `/cap_help`, `/cap_status`, and `/cap_status user:@Alice` using the member picker.
   Expected: Private replies show concise help or the chosen member's status, effective cap/source, sent/retained counts, remaining allowance, channel, accounting window, timezone, and next midnight reset. Replies cause no mentions or public channel clutter.
 - Action: Run `/cap_status` in another server text channel; inspect command availability in a DM.
@@ -95,7 +95,7 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
 - Action: Run `/cap_default limit:4`, then inspect Alice and a member without an override.
   Expected: Alice remains capped at 2. The other member inherits default 4 immediately. Lowering any cap does not delete messages immediately; the next over-cap send causes exactly one eligible same-user deletion.
 - Action: Stop and restart with `./scripts/run.sh`, then inspect both statuses.
-  Expected: The personal override and channel default persist. No token prompt occurs. After stopping again, CLI setup with blank answers retains the slash-saved default of 4.
+  Expected: The personal override and channel default persist. No token prompt occurs. The server’s saved config under guild_data retains default 4; global CLI defaults do not overwrite it.
 - Action: Start the bot, run `/cap_clear user:@Alice` twice, and inspect Alice's status.
   Expected: The first invocation restores default 4 without resetting counts. The second reports that no personal override exists. Status identifies the default as the cap source.
 
@@ -176,3 +176,18 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
   Expected: Startup prints an invite/re-authorization URL plus channel-ID and permission-override guidance, then exits. Optional voice warnings are unrelated to channel access.
 - Action: Use the invite link to authorize the correct bot in the correct server, allow the four channel permissions, and start again.
   Expected: Channel resolution succeeds when the ID and permissions are correct; the Ready message and slash-registration result appear.
+
+## Multiple servers and channel setup
+
+- Action: Invite the same bot to servers A and B. In each server, run `/cap_channel channel:#test` with Manage Server permission. If it is absent, send `@Twitter Cap channel here` with the real bot mention.
+  Expected: Each server gets its own saved channel, scoreboard, and seven commands. Setup in B does not redirect A.
+- Action: As the same human member in both servers, set your personal cap to 1 in A and 3 in B, reset your counters in both, then send two messages in each.
+  Expected: A shows 2 sent / 1 retained; B shows 2 sent / 2 retained. No cross-server deletion occurs.
+- Action: Run `/cap_default limit:8` and `/cap_reset` (confirm) in A; inspect `/cap_status` in B.
+  Expected: B’s default, override and counters do not change. Restore prior caps after testing.
+- Action: Run `/cap_channel` without Manage Server, or try a channel ID from another server through the mention command.
+  Expected: Setup is rejected and both saved configurations remain unchanged.
+- Action: Change A’s channel with `/cap_channel`, then restart the process.
+  Expected: A uses its newly saved channel and fresh daily scope; B keeps its channel and counts. Old A messages stay untouched. Old reset confirmations cannot mutate the new scope.
+- Action: Upgrade a stopped single-server installation with a backup, start the new bot, and inspect its original server’s `/cap_status` before sending more messages.
+  Expected: Existing daily counts and overrides import once into the owning server. Other servers start independently; restarting does not re-import stale legacy counts.

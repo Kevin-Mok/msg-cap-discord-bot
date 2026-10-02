@@ -1,6 +1,6 @@
 # Discord Message Cap
 
-A small standalone Discord bot for channel moderators who want a shared daily message budget. It counts each person's messages, keeps a sticky scoreboard near the bottom of one channel, and randomly replaces messages after the daily cap. The project demonstrates persistent event accounting, native slash-command controls, bounded background work, and deterministic tests with one Python runtime file.
+A small standalone Discord bot for channel moderators who want a shared daily message budget. It counts each person's messages, keeps a sticky scoreboard near the bottom of one channel per server, and randomly replaces messages after the daily cap. The project demonstrates persistent event accounting, native slash-command controls, bounded background work, and deterministic tests with two Python runtime modules and one Discord connection.
 
 ## Tech Stack And Why Chosen
 
@@ -11,6 +11,12 @@ A small standalone Discord bot for channel moderators who want a shared daily me
 - **unittest**: automated checks without another test dependency.
 
 Browse: [Setup](#setup) · [Slash commands](#discord-slash-commands) · [Smoke tests](docs/smoke-tests.md) · [Implementation plans](plans/)
+
+## Server isolation
+
+Invite the same bot to multiple servers. In **each server**, run `/cap_channel channel:#your-channel` as a member with **Manage Server** or **Administrator**. If the slash command is missing, select the bot’s actual mention and send `@Twitter Cap channel here` in the desired channel. This creates or changes only that server’s monitored channel.
+
+Each server has separate daily counts, default caps, personal overrides, reset windows, and scoreboard messages—even when the same user is present in several servers. `/cap_default` changes only the invoking server. Channel setup rejects targets from another server. Changing channels starts a fresh daily scope for that server and leaves the old channel’s messages untouched.
 
 ## Daily behavior
 
@@ -41,7 +47,7 @@ cd msg-cap-discord-bot
 ./scripts/setup.sh
 ```
 
-Setup creates `.venv`, installs `requirements.txt`, and asks for the token with hidden input, channel ID, cap, and timezone. Press Enter to accept the cap/timezone defaults. It stores `config.json` with owner-only permissions and uses `data.sqlite3` for message state. Both are ignored by Git. Keep this directory on a private local filesystem and do not share the config file.
+Setup creates `.venv`, installs `requirements.txt`, and asks for the token with hidden input, channel ID, cap, and timezone. Press Enter to accept the cap/timezone defaults. It stores `config.json` with owner-only permissions and uses `data.sqlite3` for message state. Both are ignored by Git. The initial channel is a legacy/bootstrap setting; configure additional servers inside Discord. Keep this directory on a private local filesystem and do not share the config file.
 
 Invite the bot using your saved token (this prints a URL and exits without tracking messages):
 
@@ -57,19 +63,19 @@ Subsequent starts need no token entry:
 ./scripts/run.sh
 ```
 
-Stop with Ctrl+C. Keep one process running for this channel. Both wrappers forward options to the Python CLI. Setup adds `--setup` automatically; for example, `./scripts/setup.sh --cap 3` selects a test-cap prompt default. Run supports options such as `./scripts/run.sh --check`.
+Stop with Ctrl+C. Keep one process running for this bot token; that process handles all configured servers. Both wrappers forward options to the Python CLI. Setup adds `--setup` automatically; for example, `./scripts/setup.sh --cap 3` selects a test-cap prompt default. Run supports options such as `./scripts/run.sh --check`.
 
-## Fix an inaccessible channel without restarting
+## Set or repair a server’s channel
 
-When the saved channel cannot be accessed, enter its replacement ID at the terminal prompt, or press Enter and send this in your intended Discord text channel (select the actual bot mention):
+Run `/cap_channel channel:#your-channel` in that server. You can change a working channel or repair an unavailable one without restarting. If slash commands are missing, select the actual bot mention and send:
 
 ```text
 @Twitter Cap channel here
 ```
 
-Requires **Manage Server** or **Administrator**. You can also send `@Twitter Cap channel #twitter-cap` with a real channel mention, or supply its numeric ID. The target must be in the same server as the command. The bot checks View Channel, Send Messages, Read Message History, and Manage Messages before saving. It starts counting and registers slash commands automatically; then try `/cap_help`. Setup messages do not count against your cap.
+`@Twitter Cap channel #your-channel` (a real channel mention) or a numeric channel ID also works. Requires **Manage Server** or **Administrator**. The target must be in the same server. The bot checks View Channel, Send Messages, Read Message History, and Manage Messages before saving. It starts counting and registers all seven slash commands automatically; then try `/cap_help`. Setup messages do not consume allowance.
 
-This repairs an unavailable channel. An already working channel cannot be moved with this command; use `./scripts/setup.sh` while the bot is stopped to move it. Changing channels starts a fresh daily tracking scope; old messages remain. Without an interactive terminal, the bot waits for Discord setup. If it cannot send a reply, allow View Channel and Send Messages where you mention it.
+If the initial channel is inaccessible and no server is configured, an interactive terminal offers a replacement ID; press Enter to configure in Discord. The bot stays online. Other servers continue working if one server’s channel is unavailable.
 
 ## Register slash commands inside Discord
 
@@ -85,10 +91,11 @@ If registration fails, the reply includes a re-authorization link with `applicat
 
 ## Discord slash commands
 
-Use these commands in the **configured text channel**. Select members from Discord's native picker; do not type a user ID. All replies are private to the requester, and the public scoreboard refreshes through its normal five-second throttle.
+Use cap/status/reset commands in **this server’s configured text channel**. `/cap_channel` is also available elsewhere in the same server. Select members from Discord's native picker; do not type a user ID. All replies are private to the requester, and the public scoreboard refreshes through its normal five-second throttle.
 
 | Command | Who can use it | Effect |
 | --- | --- | --- |
+| `/cap_channel channel:#channel` | Manage Server / Administrator | Set or change this server’s monitored channel; can run elsewhere in the same server. |
 | `/cap_status` | Everyone | Show your effective cap, sent/retained counts, remaining allowance, accounting window, channel, timezone, and next reset. |
 | `/cap_status user:@Alice` | Everyone | Inspect another member’s status privately, including bots. |
 | `/cap_help` | Everyone | Show command examples and explain random replacement and reset. |
@@ -104,7 +111,7 @@ A personal cap takes priority over the channel default and survives midnight/res
 
 Reset confirmations explain their exact scope and offer **Reset counters** and **Cancel** for 30 seconds. Only the requester can confirm, permissions are checked again, and expired or already-used confirmations cannot execute. A reset leaves existing Discord messages in place and excludes them from subsequent random deletions. The new window displays **since reset**, survives restart, and returns to normal daily accounting at local midnight. Reset never changes caps or personal overrides.
 
-Commands are registered to the configured channel's server once per process after channel resolution. After upgrading, stop the old process and run `./scripts/run.sh` again. If commands are missing, check the startup log for registration errors, confirm the bot was invited with **applications.commands**, and check server/channel **Use Application Commands** permission and application integration settings. Reconnects do not repeatedly sync commands. Message Content intent remains unnecessary.
+Each joined server receives `/cap_channel`; configured servers also receive the cap/status/reset commands. Commands register at startup, server join, and channel setup, or through manual sync. After upgrading, stop the old process and run `./scripts/run.sh` again. If commands are missing, check the startup log for registration errors, confirm the bot was invited with **applications.commands**, and check server/channel **Use Application Commands** permission and application integration settings. Reconnects do not repeatedly sync commands. Message Content intent remains unnecessary.
 
 ## Configuration and checks
 
@@ -119,17 +126,17 @@ Run these commands from the project directory:
 
 - `--setup` creates or edits configuration; blank input keeps existing values. It preserves message data.
 - `--cap N` selects the cap prompt default during setup (press Enter to accept); for example `.venv/bin/python bot.py --setup --cap 3` prepares a short live smoke test.
-- `--config PATH` selects another config file; `data.sqlite3` lives beside it. Use a separate directory for isolated setup checks.
-- `--check` validates local configuration/database and reports channel, cap, and timezone without logging in or printing the token. It does not verify Discord permissions or token validity.
+- `--config PATH` selects another config file; `data.sqlite3` and `guild_data/` live beside it. Use a separate directory for isolated setup checks.
+- `--check` validates the global and saved per-server configurations/databases and reports initial defaults plus the number of saved servers without logging in or printing the token. It does not verify Discord permissions or token validity.
 - `--invite` authenticates using the saved token and prints this bot’s server invite URL. It does not connect the Gateway, start moderation, or open the quota database.
 - `--help` lists supported CLI options.
 
-Changes made through CLI setup require a restart. `/cap_default` updates the same saved cap immediately, and later setup prompts retain that value. Channel or timezone changes reset the current quota scope; cap or token changes preserve it. Lowering the cap does not bulk-delete existing messages; each further over-cap send still triggers one deletion. A channel change leaves the old status batch for manual cleanup in the old channel. Follow [the live smoke checklist](docs/smoke-tests.md), then restore the default with `/cap_default limit:50` and clear any test personal overrides with `/cap_clear`. CLI setup remains available while the bot is stopped.
+CLI setup changes require a restart and supply login/initial defaults. Existing servers keep their own settings: use `/cap_channel` and `/cap_default` in Discord to change them. A server channel change resets only its current daily quota scope. Lowering the cap does not bulk-delete existing messages; each further over-cap send still triggers one deletion. A channel change leaves the old status batch for manual cleanup in the old channel. Follow [the live smoke checklist](docs/smoke-tests.md), then restore the default with `/cap_default limit:50` and clear any test personal overrides with `/cap_clear`. CLI setup remains available while the bot is stopped.
 
 ## Reliability and limits
 
-SQLite preserves observed sent counts, retained message IDs, status IDs, personal overrides, and reset windows across restarts. Existing version-1 databases migrate automatically without resetting counts or status IDs; keep a stopped-process backup before upgrading. Do not replace the database to enable commands. Message bodies are not stored. Already-deleted candidates are removed and selection retries. Transient transport failures are logged and the counter retries on a later refresh; local database failures stop tracking rather than silently losing accounting. Permission/API failures are logged and failed deletions are not reported as successful; fix channel permissions before relying on cap enforcement.
+Each server stores owner-only `config.json` and `data.sqlite3` under `guild_data/<guild-id>/`, ignored by Git. These configs contain credentials; keep the whole directory private. SQLite preserves observed sent counts, retained message IDs, status IDs, personal overrides, and reset windows across restarts. On first upgrade, the legacy database is copied only to the verified server owning the original channel; existing per-server databases are never overwritten. The original database is retained as a backup. Back up the global config and entire guild_data directory while stopped. Existing version-1 databases migrate automatically without resetting counts or status IDs; keep a stopped-process backup before upgrading. Do not replace the database to enable commands. Message bodies are not stored. Already-deleted candidates are removed and selection retries. Transient transport failures are logged and the counter retries on a later refresh; local database failures stop tracking rather than silently losing accounting. Permission/API failures are logged and failed deletions are not reported as successful; fix channel permissions before relying on cap enforcement.
 
-Only messages observed while the bot is running are tracked. Messages sent offline are not backfilled. Offline/manual deletions can temporarily make retained counts stale until candidates are checked. Discord API actions and SQLite writes cannot form one atomic transaction, so a crash at that boundary can also leave state needing reconciliation. This is an MVP for one process and one channel, not a strict moderation guarantee during outages.
+Only messages observed while the bot is running are tracked. Messages sent offline are not backfilled. Offline/manual deletions can temporarily make retained counts stale until candidates are checked. Discord API actions and SQLite writes cannot form one atomic transaction, so a crash at that boundary can also leave state needing reconciliation. This is an MVP for one process and one channel per server, not a strict moderation guarantee during outages.
 
 Automated checks exercise offline behavior. A real token and test channel are needed to validate invitation, permissions, deletion, and sticky display. See [the slash-command plan](plans/discord-cap-slash-commands.md) for current verification and [the original implementation plan](plans/discord-message-cap-mvp.md) for baseline acceptance and [the accepted slash-command prompt](prompts/discord-cap-slash-commands.md) for the command implementation contract. Offline checks do not verify live slash-command registration or Discord interaction behavior.
