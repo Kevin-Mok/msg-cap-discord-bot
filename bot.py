@@ -24,6 +24,15 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger('messagecap')
 Delete = Callable[[int], Awaitable[None]]
+VOICE_DEPENDENCY_NOTICES = {
+    'PyNaCl is not installed, voice will NOT be supported',
+    'davey is not installed, voice will NOT be supported',
+}
+
+
+class DiscordVoiceNoticeFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (record.name == 'discord.client' and record.getMessage() in VOICE_DEPENDENCY_NOTICES)
 
 
 @dataclass(frozen=True)
@@ -1046,6 +1055,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     # Discord logs can include application-level data; keep runtime output scoped.
     logging.getLogger('discord').setLevel(logging.WARNING)
+    logging.getLogger('discord.client').addFilter(DiscordVoiceNoticeFilter())
     store = None
     try:
         if args.setup:

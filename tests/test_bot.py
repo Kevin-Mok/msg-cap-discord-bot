@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+import logging
 import os
 from pathlib import Path
 import stat
@@ -11,6 +12,19 @@ from unittest.mock import patch
 
 spec = importlib.util.find_spec('bot')
 bot = __import__('bot') if spec else None
+
+
+class DiscordVoiceNoticeTests(unittest.TestCase):
+    def test_filter_hides_only_optional_voice_dependency_notices(self):
+        notice_filter = bot.DiscordVoiceNoticeFilter()
+
+        def record(message, name='discord.client'):
+            return logging.LogRecord(name, logging.WARNING, 'client.py', 1, message, (), None)
+
+        self.assertFalse(notice_filter.filter(record('PyNaCl is not installed, voice will NOT be supported')))
+        self.assertFalse(notice_filter.filter(record('davey is not installed, voice will NOT be supported')))
+        self.assertTrue(notice_filter.filter(record('Gateway disconnected')))
+        self.assertTrue(notice_filter.filter(record('PyNaCl is not installed, voice will NOT be supported', 'messagecap')))
 
 
 class BotTests(unittest.IsolatedAsyncioTestCase):
