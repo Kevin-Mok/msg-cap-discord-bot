@@ -15,9 +15,9 @@ Run these in **#twitter-cap**, provided this is the configured channel. Use slas
 4. Action: /cap_reset user:@you
    Expected: A private prompt names only you. Click **Reset counters** within 30 seconds. Your accounting starts at zero; earlier messages stay and are excluded from this test's count/deletion pool.
 5. Action: Send three separate normal messages: test 1, test 2, test 3. Wait five seconds.
-   Expected: All three new messages remain. The sticky scoreboard shows 3 sent, 3 retained, cap 3, since reset.
+   Expected: All three new messages remain. The sticky scoreboard shows `🐦 3 tweets sent · 📥 3 retained · 🎯 cap 3 · since reset`, without a date, timezone, or account name/ID.
 6. Action: Send a fourth normal message: test 4. Wait five seconds.
-   Expected: Exactly one of these four new test messages disappears, possibly test 4. Three remain. The scoreboard shows 4 sent, 3 retained, cap 3. Earlier pre-reset messages stay untouched.
+   Expected: Exactly one of these four new test messages disappears, possibly test 4. Three remain. The scoreboard shows `🐦 4 tweets sent · 📥 3 retained · 🎯 cap 3`. Earlier pre-reset messages stay untouched.
 7. Action: /cap_status
    Expected: Private status agrees: 4 sent, 3 retained, 0 remaining. A remaining allowance of zero means random replacement on each further message.
 8. Action: /cap_reset user:@you

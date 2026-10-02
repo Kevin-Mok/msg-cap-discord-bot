@@ -33,7 +33,10 @@ class CapStateTests(unittest.IsolatedAsyncioTestCase):
         await self.send(2, 8)
         await self.engine.set_user_cap(7, 4)
         lines = '\n'.join(bot.render_dashboard(self.engine))
-        self.assertIn('7): 1 sent · 1 retained · cap 4', lines)
+        self.assertIn('🐦 1 tweet sent · 📥 1 retained · 🎯 cap 4', lines)
+        self.assertNotIn('Alice', lines)
+        self.assertNotIn('7)', lines)
+        self.assertNotIn('Daily messages', lines)
         self.assertNotIn('(8):', lines)
 
     async def test_personal_override_controls_deletion_and_survives_midnight(self):
@@ -73,7 +76,9 @@ class CapStateTests(unittest.IsolatedAsyncioTestCase):
         await self.send(4)
         self.assertEqual(self.deleted, [3])
         self.assertEqual(self.engine.rows(), [(7, 'Alice', 2, 1), (8, 'Alice', 1, 1)])
-        self.assertIn('since reset', '\n'.join(bot.render_dashboard(self.engine)))
+        dashboard = '\n'.join(bot.render_dashboard(self.engine))
+        self.assertIn('since reset', dashboard)
+        self.assertIn('2 tweets sent', dashboard)
         self.store.close()
         self.store = bot.Store(self.path)
         resumed = bot.Tracker(self.store, 123, 50, 'America/Toronto', now=lambda: self.now,

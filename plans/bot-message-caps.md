@@ -1,5 +1,7 @@
 # Count other bot accounts
 
+- [x] Format the sticky daily scoreboard as a concise tweet summary with sent, retained, and cap counts; omit date, timezone, display name, and account ID.
+
 - [x] RED: bot targets accepted; other bot messages counted and capped; own messages excluded.
 - [x] Allow bot members in cap/status/reset commands, excluding this bot itself. Keep webhook messages excluded and bootstrap control commands human-only.
 - [x] Update README and smoke checks; run full regression suite and type checks.

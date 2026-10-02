@@ -447,19 +447,13 @@ class Tracker:
 
 
 def render_dashboard(tracker: Tracker) -> list[str]:
-    # Names are untrusted display data; neutralize Markdown/control formatting.
-    def clean(name: str) -> str:
-        escaped = ''.join(' ' if ord(char) < 32 else char for char in name)[:80]
-        for char in ('\\', '*', '_', '~', '`', '|', '>'):
-            escaped = escaped.replace(char, '\\' + char)
-        return escaped
-    header = f'Daily messages · {tracker.day} · {tracker.tz.key}\n'
-    lines = [f'{clean(name)} ({uid}): {sent} sent · {retained} retained · cap '
+    header = '📊 Daily tweet summary\n'
+    lines = [f'🐦 {sent} {"tweet" if sent == 1 else "tweets"} sent · 📥 {retained} retained · 🎯 cap '
              f'{tracker.overrides[uid]}'
              + (' · since reset' if tracker.reset_at(uid) else '') + '\n'
-             for uid, name, sent, retained in tracker.rows() if uid in tracker.overrides]
+             for uid, _name, sent, retained in tracker.rows() if uid in tracker.overrides]
     if not lines:
-        lines = ['No messages from users with personal caps today.\n']
+        lines = ['No tweets from users with personal caps today.\n']
     chunks = []
     text = header
     for line in lines:
