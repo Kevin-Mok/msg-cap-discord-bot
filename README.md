@@ -1,3 +1,5 @@
+<img align="right" src="pfp.jpeg" width="112" alt="Twitter Cap mascot: a navy robot face with a cyan visor and amber progress arc." />
+
 # Discord Message Cap
 
 A small standalone Discord bot for channel moderators who want a shared daily message budget. It counts each person's messages, keeps a sticky scoreboard near the bottom of one channel per server, and randomly replaces messages after the daily cap. The project demonstrates persistent event accounting, native slash-command controls, bounded background work, and deterministic tests with two Python runtime modules and one Discord connection.
