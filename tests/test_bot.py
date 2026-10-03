@@ -314,7 +314,7 @@ class DiscordAdapterTests(DiscordFixture):
         self.assertEqual(len(self.client.tracker.rows()), 1)
         self.assertEqual(self.client.tracker.rows()[0][2:], (3, 2))
 
-    async def test_bot_reply_deletes_referenced_human_message_after_response(self):
+    async def test_bot_reply_preserves_referenced_human_message_and_link(self):
         import discord
         from types import SimpleNamespace
         from unittest.mock import AsyncMock
@@ -332,10 +332,42 @@ class DiscordAdapterTests(DiscordFixture):
                                 type=discord.MessageType.reply)
         await self.client.process_message(original)
         await self.client.process_message(reply)
-        partial.delete.assert_awaited_once()
-        await self.client.on_raw_message_delete(SimpleNamespace(channel_id=123, message_id=101))
-        self.assertEqual(self.client.tracker.rows(), [(142822767497052161, 'Big B', 1, 0),
+        partial.delete.assert_not_awaited()
+        self.assertEqual(reply.reference.message_id, original.id)
+        self.assertEqual(self.client.tracker.rows(), [(142822767497052161, 'Big B', 1, 1),
                                                        (647368715742216193, 'SaucyBot', 1, 1)])
+
+    async def test_original_and_saucy_posts_remain_eligible_for_cap_deletion(self):
+        import discord
+        from types import SimpleNamespace
+        messages = {}
+
+        async def delete(mid):
+            messages.pop(mid)
+
+        channel = SimpleNamespace(id=123, get_partial_message=lambda mid: SimpleNamespace(delete=lambda: delete(mid)))
+        self.client.channel = channel
+        self.client.tracker.choose = lambda ids: ids[0]
+        author = SimpleNamespace(id=8008, display_name='Original poster', bot=False)
+        for mid in (401, 402, 403):
+            original = SimpleNamespace(id=mid, channel=channel, guild=SimpleNamespace(), author=author,
+                                       webhook_id=None, created_at=datetime.now(timezone.utc),
+                                       content=f'https://x.com/example/status/{mid}')
+            messages[mid] = original
+            await self.client.process_message(original)
+        self.assertEqual(set(messages), {402, 403})
+        for mid in (404, 405, 406):
+            reply = SimpleNamespace(id=mid, channel=channel, guild=SimpleNamespace(),
+                                    author=SimpleNamespace(id=647368715742216193, display_name='SaucyBot', bot=True),
+                                    webhook_id=None, created_at=datetime.now(timezone.utc),
+                                    reference=SimpleNamespace(message_id=403, channel_id=123, resolved=messages[403]),
+                                    type=discord.MessageType.reply)
+            messages[mid] = reply
+            await self.client.process_message(reply)
+        self.assertEqual(set(messages), {402, 403, 405, 406})
+        self.assertEqual(messages[403].content, 'https://x.com/example/status/403')
+        self.assertEqual(self.client.tracker.rows(), [(8008, 'Original poster', 3, 2),
+                                                     (647368715742216193, 'SaucyBot', 3, 2)])
 
     async def test_bot_reply_does_not_delete_another_bot_or_cross_channel_reference(self):
         import discord
@@ -362,7 +394,7 @@ class DiscordAdapterTests(DiscordFixture):
         await self.client.process_message(reply)
         partial.delete.assert_not_awaited()
 
-    async def test_saucy_reply_deletes_any_users_referenced_message(self):
+    async def test_saucy_reply_preserves_any_users_referenced_message(self):
         import discord
         from types import SimpleNamespace
         from unittest.mock import AsyncMock
@@ -380,9 +412,9 @@ class DiscordAdapterTests(DiscordFixture):
                                 type=discord.MessageType.reply)
         await self.client.process_message(original)
         await self.client.process_message(reply)
-        partial.delete.assert_awaited_once()
-        await self.client.on_raw_message_delete(SimpleNamespace(channel_id=123, message_id=301))
-        self.assertEqual(self.client.tracker.rows()[0], (8008, 'Another user', 1, 0))
+        partial.delete.assert_not_awaited()
+        self.assertEqual(reply.reference.message_id, original.id)
+        self.assertEqual(self.client.tracker.rows()[0], (8008, 'Another user', 1, 1))
 
     async def test_discord_errors_are_translated_for_safe_retry(self):
         import discord

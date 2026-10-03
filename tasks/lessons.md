@@ -18,3 +18,6 @@
 ## 2026-10-03 — Direct links and restart history
 - A public Discord URL button needs a selected reader known before clicking. Rebuild dependent reader/recovery objects when replacing a tracker; invalidate links at local midnight and discard scans if the selected reader changes during an await.
 - Restart backfill must merge a complete snapshot atomically, preserve saved sent totals and reset windows, and deduplicate gateway events. Exclude setup/sync requests just as live counting does. Discord history cannot recover messages created and deleted entirely offline.
+
+## 2026-10-03 — Reply preservation and independent fixtures
+- SaucyBot reply arrival must preserve the human source and tweet URL; quota deletion remains per author for humans and SaucyBot. Reader fixtures should use explicit synthetic account IDs rather than a constant owned by an unrelated cleanup feature.

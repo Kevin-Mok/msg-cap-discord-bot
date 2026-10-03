@@ -4,11 +4,11 @@ This repository review identifies small ways to make posting tweets in Discord m
 
 ## Repository findings
 
-The bot tracks per-server daily message counts and random replacements, keeps a scoreboard, and already offers private slash-command responses. It does not store message bodies or run with Discord's Message Content intent. SaucyBot replies can remove the human-authored message they reference, so a useful reading list should include surviving SaucyBot replies as well as human posts.
+The bot tracks per-server daily message counts and random replacements, keeps a scoreboard, and already offers private slash-command responses. It does not store message bodies or run with Discord's Message Content intent. SaucyBot replies preserve the human-authored message and original tweet URL; normal per-author caps can still delete either account’s posts. A useful reading list should include surviving SaucyBot replies as well as human posts.
 
 Daily quota data is not a durable archive: rollover clears the daily message index, and moderator resets make messages ineligible for future cap deletions even while those messages remain visible in Discord. Favorites and reading checkpoints must use their own persistent records or query Discord history; they cannot safely treat the cap tracker as a list of extant posts. A reaction also does not establish that its author read a message.
 
-The implementation and tests support the findings: [SQLite quota store](../bot.py), [daily rollover and reset](../bot.py), [SaucyBot reply cleanup](../bot.py), [per-server gateway and command routing](../guild_bot.py), and [regression tests](../tests/).
+The implementation and tests support the findings: [SQLite quota store](../bot.py), [daily rollover and reset](../bot.py), [SaucyBot reply preservation](../bot.py), [per-server gateway and command routing](../guild_bot.py), and [regression tests](../tests/).
 
 ## Ranked feature ideas
 
@@ -17,16 +17,16 @@ The implementation and tests support the findings: [SQLite quota store](../bot.p
 | **1. Quick win: Personal favorites** | You or your wife adds ⭐ to a post; `/favorites` privately returns saved jump links for that person. | Save a message ID when a human adds a normal Unicode ⭐ and remove that person's save when they unstar. Show ten saved links per page; allow human posts and eligible SaucyBot replies. Existing SQLite supports durable metadata, but favorites need a table separate from daily quota state. | **Medium.** Requires normal reaction intent at the gateway, raw event routing, an independent table, and migration. **High confidence** if offline-star reconciliation and cap changes stay out of scope. |
 | **2. Quick win: Recent-post catch-up** | Your wife opens `/catchup` to see recent surviving tweets without scrolling back through the channel. | Read a bounded Discord history window on demand; return ten jump links per page, oldest first within the snapshot. Include human posts and eligible SaucyBot replies. Existing channel setup already requires Read Message History. | **Small.** No new storage, message-body archive, or reaction handling. **Very high confidence** for a bounded history query. |
 | **3. Quick win: Reaction roundup** | You revisit recent posts that attracted the most emoji reactions. | `/reactions` privately lists up to five recent posts with total and per-emoji counts and jump links. Use fresh history and reaction metadata; the current gateway has no reaction handlers. | **Small.** No new persistence or reaction events. Counts may include bots, multiple emoji from one person, and super reactions. **Very high confidence.** |
-| **4. Quick win: Last-post receipt** | `/last_tweet` explains whether your latest observed post remains, was replaced by the cap, or was later removed through the SaucyBot workflow. | Keep a small per-author receipt with the observed outcome and any surviving link. The existing `/cap_status` already reports aggregate sent, retained, remaining, and reset values, so the receipt must describe an individual post. | **Medium.** Requires durable outcome metadata and hooks around processing and deletion. A successfully counted message might itself be deleted; **medium-high confidence** if the receipt says only what the bot verified. |
+| **4. Quick win: Last-post receipt** | `/last_tweet` explains whether your latest observed post remains, was replaced by the cap, or was manually deleted. | Keep a small per-author receipt with the observed outcome and any surviving link. The existing `/cap_status` already reports aggregate sent, retained, remaining, and reset values, so the receipt must describe an individual post. | **Medium.** Requires durable outcome metadata and hooks around processing and deletion. A successfully counted message might itself be deleted; **medium-high confidence** if the receipt says only what the bot verified. |
 | **5. Next step: Resume catch-up** | Your wife reads the next batch and explicitly selects “Mark this batch caught up.” | Keep a checkpoint per reader and channel. Listing posts or reacting never advances it; only the explicit action advances past the displayed batch. Midnight and quota resets leave it alone. | **Medium to large.** Naturally follows idea 2 and requires independent persistent state. **Medium-high confidence** with a fixed scan limit and no scheduled alerts. |
-| **6. Next step: Favorites that follow SaucyBot replies** | A ⭐ saved on a human post follows its verified SaucyBot reply when the original is deleted. | Record the source-to-reply relationship and transfer a personal favorite only for the existing reply-cleanup workflow. The cleanup currently recognizes reply references but does not persist the relationship. | **Medium to large.** Builds on idea 1 or includes it. Must handle deletion ordering and event gaps honestly. **Medium confidence** for a bounded follow-up. |
+| **6. Next step: Favorites that follow SaucyBot replies** | A ⭐ saved on a human post follows its verified SaucyBot reply when the original is deleted. | Record a verified source-to-reply relationship for future favorite transfers when a source is deleted by its cap. Reply cleanup is disabled, and the relationship is not currently persisted. | **Medium to large.** Builds on idea 1 or includes it. Must handle deletion ordering and event gaps honestly. **Medium confidence** for a bounded follow-up. |
 
 Discord's current [message documentation](https://docs.discord.com/developers/resources/message#message-object) distinguishes message metadata, reaction counts, and content fields. Content-based previews or digests need a separate permissions and storage decision. For event-based favorite tracking, discord.py's [raw reaction events](https://discordpy.readthedocs.io/en/stable/api.html#discord.on_raw_reaction_add) work when messages are absent from its internal cache; the configured production gateway and its per-server routing need to receive and route those events.
 
 ## Tradeoffs and proposed defaults
 
 - **Reacting and reading are different signals.** A favorite marks a post to save. A reaction count describes reactions visible when read; neither proves a post was read.
-- **A jump link does not preserve a post.** Discord links can break after cap deletion, manual deletion, or SaucyBot cleanup. Removing saved links for confirmed deletions cannot undo a deletion or recover the content.
+- **A jump link does not preserve a post.** Discord links can break after cap deletion or manual deletion. Removing saved links for confirmed deletions cannot undo a deletion or recover the content.
 - **Protecting ⭐ posts would change cap behavior.** None of the three implementation prompts below exempts starred posts. Decide separately whether that cap change is worth making.
 - **Catch-up shows what survives.** A fresh history query can include posts sent while the bot was offline, but it cannot restore a deleted original. A 100-message scan must disclose when older results might exist.
 - **Favorite tracking initially observes events only while online.** The bounded MVP documents stars added or removed during downtime as a reconciliation limitation rather than promising an accurate historical collection.
@@ -134,8 +134,8 @@ Paste this prompt independently; it needs no favorite or reaction-roundup featur
 Implement bounded /catchup in /home/kevin/coding/twitter-cap-bot.
 
 Let a channel member browse recent surviving tweets using a private list
-of Discord jump links. Include eligible replies from the existing
-REPLY_CLEANUP_BOT_ID: its replies can survive cleanup of human originals.
+of Discord jump links. Include eligible SaucyBot replies as well as
+human originals; either can survive normal per-author cap deletion.
 
 Before editing, read applicable AGENTS instructions, README.md,
 tasks/lessons.md, relevant plans, bot.py, guild_bot.py, and tests.

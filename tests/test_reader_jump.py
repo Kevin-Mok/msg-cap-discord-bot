@@ -97,10 +97,10 @@ class ReaderJumpTests(unittest.IsolatedAsyncioTestCase):
         self.message(4, author=111, bot_author=True)
         self.message(4, webhook=1234)
         self.message(4, kind=discord.MessageType.pins_add)
-        target = self.message(4, author=bot.REPLY_CLEANUP_BOT_ID, bot_author=True,
+        target = self.message(4, author=647368715742216193, bot_author=True,
                               kind=discord.MessageType.reply)
         await self.select_reader()
-        await self.invoke('cap_source', FakeInteraction(self.admin), user=self.member(bot.REPLY_CLEANUP_BOT_ID))
+        await self.invoke('cap_source', FakeInteraction(self.admin), user=self.member(647368715742216193))
         self.assertEqual((await self.button()).url, target.jump_url)
 
     async def test_burst_reaction_also_marks_seen_and_caught_up_has_no_link(self):

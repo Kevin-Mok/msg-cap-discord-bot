@@ -27,7 +27,7 @@ The default cap is **50** in **America/Toronto**; moderators can set personal ov
 
 The scoreboard shows only users with an explicit personal cap. Each row shows the number of tweets sent and retained, plus the cap (for example, `🐦 53 tweets sent · 📥 50 retained · 🎯 cap 50`). Users with only the channel default and users cleared from caps are omitted. Deletions reduce retained count, not sent count. Edits, this bot’s own messages, webhooks, direct messages, and other channels do not count. Other bot accounts can be selected in `/cap_user`, `/cap_status`, `/cap_reset`, and `/cap_clear` and follow the same cap rules.
 
-In the configured SaucyBot workflow, its direct reply removes the referenced human-authored message after the response arrives. This cleanup is limited to SaucyBot and the monitored channel.
+SaucyBot replies leave the original human post and its X/Twitter link in place. Original posts and SaucyBot posts still follow their authors’ caps: an over-cap send can randomly delete a post from that same author. Caps are per account, so the original poster and SaucyBot have separate allowances.
 
 The bot replaces its status batch after activity, at most once every five seconds. This returns the scoreboard near the bottom; Discord cannot permanently anchor a message there. Large scoreboards use multiple messages. At local midnight, tracking and the displayed day reset without deleting yesterday's human messages.
 
