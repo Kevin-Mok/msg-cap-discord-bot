@@ -368,6 +368,35 @@ class Tracker:
                     break
             return True
 
+    def _reconcile_history(self, messages: Sequence[tuple[int, int, str, datetime]], before_id: int) -> None:
+        """Atomically merge a complete history snapshot while the caller holds lock."""
+        surviving = {}
+        for mid, uid, name, created_at in messages:
+            reset_at = self.reset_at(uid)
+            if (mid >= before_id or created_at.astimezone(self.tz).date().isoformat() != self.day
+                    or (reset_at is not None and created_at <= datetime.fromisoformat(reset_at))):
+                continue
+            surviving[mid] = (uid, name)
+        added = {mid: row for mid, row in surviving.items() if mid not in self.seen}
+        removed = [mid for mid in self.owners if mid < before_id and mid not in surviving]
+        with self.store.connection:
+            for mid, (uid, name) in added.items():
+                self.store.connection.execute('INSERT INTO events VALUES (?, ?, 1, 1)', (mid, uid))
+                self.store.connection.execute('''INSERT INTO users VALUES (?, ?, 1)
+                    ON CONFLICT(id) DO UPDATE SET name=excluded.name, sent=sent+1''', (uid, name))
+            self.store.connection.executemany('UPDATE events SET retained=0 WHERE id=?',
+                                             ((mid,) for mid in removed))
+        # Mutate memory only after the full transaction commits successfully.
+        for mid, (uid, name) in added.items():
+            self.seen.add(mid)
+            self.users[uid] = (name, self.users.get(uid, ('', 0))[1] + 1)
+            self.retained[uid][mid] = None
+            self.owners[mid] = uid
+        for mid in removed:
+            self.retained[self.owners.pop(mid)].pop(mid, None)
+        if added or removed:
+            self.revision += 1
+
     def cap_for(self, user_id: int) -> int | None:
         if user_id in self.exemptions:
             return None
@@ -468,17 +497,21 @@ def render_dashboard(tracker: Tracker) -> list[str]:
 class Dashboard:
     def __init__(self, store: Store, tracker: Tracker,
                  send: Callable[[str], Awaitable[int]], delete: Delete,
-                 *, monotonic: Callable[[], float] = time.monotonic):
+                 *, monotonic: Callable[[], float] = time.monotonic,
+                 prepare: Callable[[], Awaitable[None]] | None = None):
         self.store, self.tracker = store, tracker
         self.send, self.delete = send, delete
         self.monotonic = monotonic
         self.last_attempt = float('-inf')
         self.published = -1  # Force replacement of persisted batch after restart.
         self.lock = asyncio.Lock()
+        self.prepare = prepare
 
     async def refresh(self) -> None:
         async with self.lock:
             await self.tracker.rollover()
+            if self.prepare is not None:
+                await self.prepare()
             if self.published == self.tracker.revision or self.monotonic() - self.last_attempt < 5:
                 return
             self.last_attempt = self.monotonic()
@@ -518,6 +551,8 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
 
     from discord import app_commands
     from discord.state import ConnectionState
+    from restart_recovery import RestartRecovery
+    from reader_jump import ReaderJump
 
     async def reply(interaction, content: str, **kwargs):
         send = interaction.followup.send if interaction.response.is_done() else interaction.response.send_message
@@ -612,6 +647,7 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             intents = discord.Intents.none()
             intents.guilds = True
             intents.guild_messages = True
+            intents.guild_reactions = True
             super().__init__(intents=intents, max_messages=None, allowed_mentions=discord.AllowedMentions.none())
             self.channel: discord.TextChannel | None = None
             self.worker = None
@@ -630,7 +666,18 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                 self.http = gateway.http
             self.tracker = Tracker(store, settings.channel_id, settings.cap, settings.timezone_name,
                                    delete=self.delete_message)
-            self.dashboard = Dashboard(store, self.tracker, self.send_status, self.delete_message)
+            self.recovery = RestartRecovery(self.tracker)
+            self.reader_jump = ReaderJump(store.connection, self.tracker.tz,
+                                          lambda: self.tracker.now(), REPLY_CLEANUP_BOT_ID)
+            self.dashboard = Dashboard(store, self.tracker, self.send_status, self.delete_message,
+                                       prepare=self.prepare_status)
+
+        async def prepare_status(self):
+            if self.channel is not None and self.user is not None:
+                changed = await self.reader_jump.refresh(self.channel, self.user.id,
+                                                        self.tracker.revision, self.dashboard.monotonic())
+                if changed:
+                    self.dashboard.published = -1
 
         def permission_error(self, interaction, *, moderator: bool = False, target=None, member=None) -> str | None:
             channel = self.channel
@@ -659,6 +706,26 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             return True
 
         def register_commands(self):
+            @self.tree.command(name='cap_reader', description='Choose whose reactions the summary jump button follows.')
+            @app_commands.guild_only()
+            @app_commands.default_permissions(manage_messages=True)
+            @app_commands.describe(user='Reader for the direct jump button; leave blank to remove the button')
+            async def cap_reader(interaction: discord.Interaction, user: discord.Member | None = None):
+                if not await self.authorize(interaction, moderator=True, target=user):
+                    return
+                if user is not None and user.bot:
+                    await reply(interaction, 'Choose a person whose reactions should mark tweets as seen.')
+                    return
+                await interaction.response.defer(ephemeral=True)
+                async with self.tracker.lock:
+                    self.tracker._rollover()
+                    self.reader_jump.set_reader(user.id if user is not None else None)
+                    self.tracker.revision += 1
+                text = ('Jump button removed.' if user is None else
+                        f'The summary jump button now follows **{discord.utils.escape_markdown(user.display_name)}**. '
+                        'It opens today’s oldest tweet they haven’t reacted to. Updates on the next summary refresh; selection survives restarts.')
+                await reply(interaction, text)
+
             @self.tree.command(name='cap_user', description='Set a personal daily message cap for a member.')
             @app_commands.guild_only()
             @app_commands.default_permissions(manage_messages=True)
@@ -765,6 +832,7 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                     '`/cap_channel channel:#channel` — set this server’s channel (Manage Server).\n'
                     '`/cap_status` — your allowance; choose a member to inspect theirs.\n'
                     '**Moderators · Manage Messages required**\n'
+                    '`/cap_reader user:@member` — direct jump in the summary using their reactions; omit user to disable.\n'
                     '`/cap_user user:@member limit:25` — persistent personal cap.\n'
                     '`/cap_default limit:50` — default for members without an override.\n'
                     '`/cap_clear user:@member` — exempt them from all caps.\n'
@@ -817,7 +885,11 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             if channel is None:
                 raise DeleteFailed('Channel is not ready.')
             try:
-                message = await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+                view = self.reader_jump.view()
+                if view is None:
+                    message = await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+                else:
+                    message = await channel.send(text, allowed_mentions=discord.AllowedMentions.none(), view=view)
                 return message.id
             except (discord.HTTPException, OSError, aiohttp.ClientError):
                 raise DeleteFailed() from None
@@ -895,7 +967,11 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             tracker = Tracker(store, channel.id, updated.cap, updated.timezone_name, delete=self.delete_message)
             settings = updated
             self.tracker = tracker
-            self.dashboard = Dashboard(store, tracker, self.send_status, self.delete_message)
+            self.recovery = RestartRecovery(tracker)
+            self.reader_jump = ReaderJump(store.connection, tracker.tz,
+                                          lambda: self.tracker.now(), REPLY_CLEANUP_BOT_ID)
+            self.dashboard = Dashboard(store, tracker, self.send_status, self.delete_message,
+                                       prepare=self.prepare_status)
             self.channel = channel
             self.startup_error = None
             if self.channel_prompt is not None and self.channel_prompt is not asyncio.current_task():
@@ -962,6 +1038,7 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             try:
                 channel = await self.checked_channel(settings.channel_id)
                 self.channel = channel
+                self.recovery.request()
                 self.startup_error = None
                 if self.channel_prompt is not None:
                     self.channel_prompt.cancel()
@@ -1019,11 +1096,27 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             if payload.channel_id == settings.channel_id:
                 await self.handle_removed([payload.message_id])
 
+        async def on_raw_reaction_add(self, payload):
+            if payload.channel_id == settings.channel_id and payload.user_id == self.reader_jump.reader_id:
+                self.reader_jump.dirty = True
+
+        async def on_raw_reaction_remove(self, payload):
+            await self.on_raw_reaction_add(payload)
+
+        async def on_raw_reaction_clear(self, payload):
+            if payload.channel_id == settings.channel_id:
+                self.reader_jump.dirty = True
+
+        async def on_raw_reaction_clear_emoji(self, payload):
+            await self.on_raw_reaction_clear(payload)
+
         async def on_raw_bulk_message_delete(self, payload):
             if payload.channel_id == settings.channel_id:
                 await self.handle_removed(list(payload.message_ids))
 
         async def handle_removed(self, ids):
+            if self.reader_jump.url is not None and int(self.reader_jump.url.rsplit('/', 1)[-1]) in ids:
+                self.reader_jump.dirty = True
             try:
                 self.dashboard.removed(ids)
                 await self.tracker.removed(ids)
@@ -1039,6 +1132,8 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                     try:
                         async with self.runtime_lock:
                             if self.channel is not None:
+                                if self.user is not None:
+                                    await self.recovery.refresh(self.channel, self.user.id)
                                 await self.dashboard.refresh()
                     except sqlite3.Error:
                         LOG.error('Database update failed; stopping. Check disk space and database access.')

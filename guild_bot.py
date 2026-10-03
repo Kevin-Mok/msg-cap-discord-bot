@@ -45,6 +45,7 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
             intents = discord.Intents.none()
             intents.guilds = True
             intents.guild_messages = True
+            intents.guild_reactions = True
             super().__init__(intents=intents, max_messages=None, allowed_mentions=discord.AllowedMentions.none())
             self.tree = GuildTree(self)
             self.controllers = {}
@@ -143,6 +144,7 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
                 finally:
                     snapshot.close()
                 controller.channel = channel
+                controller.recovery.request()
                 controller.get_channel = self.get_channel
                 controller.fetch_channel = self.fetch_channel
                 async def sync_commands(guild_id: int):
@@ -188,6 +190,10 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
         async def on_ready(self):
             for guild in self.guilds:
                 await self.load_guild(guild)
+                async with self.lock_for(guild.id):
+                    controller = self.controllers.get(guild.id)
+                    if controller is not None and controller.channel is not None:
+                        controller.recovery.request()
             migrated = legacy.connection.execute("SELECT value FROM meta WHERE key='guild_migrated'").fetchone()
             if migrated is None:
                 try:
@@ -260,6 +266,24 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
         async def on_raw_bulk_message_delete(self, payload):
             await self.removed(payload.channel_id, list(payload.message_ids))
 
+        async def route_reaction(self, name, payload):
+            for gid, controller in list(self.controllers.items()):
+                async with self.lock_for(gid):
+                    if controller.channel is not None and controller.channel.id == payload.channel_id:
+                        await getattr(controller, name)(payload)
+
+        async def on_raw_reaction_add(self, payload):
+            await self.route_reaction('on_raw_reaction_add', payload)
+
+        async def on_raw_reaction_remove(self, payload):
+            await self.route_reaction('on_raw_reaction_remove', payload)
+
+        async def on_raw_reaction_clear(self, payload):
+            await self.route_reaction('on_raw_reaction_clear', payload)
+
+        async def on_raw_reaction_clear_emoji(self, payload):
+            await self.route_reaction('on_raw_reaction_clear_emoji', payload)
+
         async def removed(self, channel_id, ids):
             for gid, controller in list(self.controllers.items()):
                 async with self.lock_for(gid):
@@ -278,6 +302,8 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
                         if controller is None or controller.channel is None:
                             continue
                         try:
+                            if self.user is not None:
+                                await controller.recovery.refresh(controller.channel, self.user.id)
                             await controller.dashboard.refresh()
                         except sqlite3.Error:
                             await controller.close()

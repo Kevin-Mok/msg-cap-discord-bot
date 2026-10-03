@@ -30,11 +30,34 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
 ### Register commands from Discord
 
 - Action: After updating the code, restart once with Ctrl+C and `./scripts/run.sh`. As a member with Manage Server or Administrator, send `@Twitter Cap slash sync` in #twitter-cap, selecting the actual bot mention from Discord’s picker.
-  Expected: A public “Syncing slash commands…” reply changes to “Registered 7 slash commands” with their names. No ping occurs, the request does not increase your quota counters, and `/cap_help` becomes available. Message Content intent remains disabled.
+  Expected: A public “Syncing slash commands…” reply changes to “Registered 8 slash commands” with their names, including `/cap_reader`. No ping occurs, the request does not increase your quota counters, and `/cap_help` becomes available. Message Content intent remains disabled.
 - Action: Immediately send `@Twitter Cap sync`.
   Expected: A reply asks you to wait 30 seconds. No second registration occurs.
 - Action: Send the sync command as a member without Manage Server or Administrator.
   Expected: The reply explains the required permission; commands and counters remain unchanged.
+
+## Direct jump and restart recovery
+
+Use two human accounts: one posting, one reading. Select the reader with Discord's native member picker; selecting the posting account would intentionally exclude that account's own messages.
+
+- Action: ./scripts/run.sh
+  Expected: After stopping the previous process with Ctrl+C, the updated bot starts, restores saved counts and reader selection, and refreshes the sticky summary. No sudo is required.
+- Action: /cap_reader user:@reader
+  Expected: As a moderator in the configured channel, receive a private confirmation. The bottom summary gains a jump button; this reader selection is shared by everyone viewing that summary. A non-moderator or bot target is rejected.
+- Action: Post three messages today from the other human account; react to the oldest as the selected reader, then wait for the summary refresh and tap Jump to unreacted.
+  Expected: Discord opens the second message directly, with no intermediate bot reply. Someone else's reaction does not skip a message; any normal or super reaction by the reader does.
+- Action: Remove the reader's last reaction from the first message, wait at least five seconds, and tap the summary button again.
+  Expected: The first message is the destination again. Deleting that target advances to the next eligible surviving message. A quota reset does not hide older posts from this jump.
+- Action: React as the reader to every eligible message from today.
+  Expected: The summary shows a disabled All caught up today button. Yesterday's posts, the reader's own posts, unrelated bots, webhooks and system messages are not jump targets. SaucyBot posts remain eligible.
+- Action: Note /cap_status sent and retained values, stop the bot, send two posts, delete one previously counted post, and restart with ./scripts/run.sh.
+  Expected: Recovery adds the two surviving offline posts exactly once, preserves previously saved sent totals, subtracts the deleted post from retained only, and makes no retroactive cap deletions. The reader setting persists and the jump reflects live reactions. Restart again: neither sent nor retained doubles. Messages created and deleted entirely during downtime cannot be recovered.
+- Action: Repeat restart after /cap_reset, and run the same checks in a second configured server.
+  Expected: Recovery respects the since-reset window; previous posts are not counted again. Each server retains its own reader and daily counts. The jump still considers all eligible posts from today, including those before a counter reset.
+- Action: Temporarily deny Read Message History, trigger a reader reaction change, then restore permission.
+  Expected: The jump becomes unavailable rather than falsely caught up; saved counts remain intact on a failed recovery. Lookups recover after permission is restored (reader retry on the next refresh; startup recovery retry within 30 seconds).
+- Action: /cap_reader
+  Expected: As a moderator, remove the jump button without changing counts or caps.
 
 ### If a step fails
 
@@ -184,7 +207,7 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
 ## Multiple servers and channel setup
 
 - Action: Invite the same bot to servers A and B. In each server, run `/cap_channel channel:#test` with Manage Server permission. If it is absent, send `@Twitter Cap channel here` with the real bot mention.
-  Expected: Each server gets its own saved channel, scoreboard, and seven commands. Setup in B does not redirect A.
+  Expected: Each server gets its own saved channel, scoreboard, and eight commands. Setup in B does not redirect A.
 - Action: As the same human member in both servers, set your personal cap to 1 in A and 3 in B, reset your counters in both, then send two messages in each.
   Expected: A shows 2 sent / 1 retained; B shows 2 sent / 2 retained. No cross-server deletion occurs.
 - Action: Run `/cap_default limit:8` and `/cap_reset` (confirm) in A; inspect `/cap_status` in B.
@@ -192,6 +215,6 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
 - Action: Run `/cap_channel` without Manage Server, or try a channel ID from another server through the mention command.
   Expected: Setup is rejected and both saved configurations remain unchanged.
 - Action: Change A’s channel with `/cap_channel`, then restart the process.
-  Expected: A uses its newly saved channel and fresh daily scope; B keeps its channel and counts. Old A messages stay untouched. Old reset confirmations cannot mutate the new scope.
+  Expected: A rebuilds today's counts from surviving messages in its newly saved channel; B keeps its channel and counts. Old A messages stay untouched. Old reset confirmations cannot mutate the new scope. A's reader selection persists, with its jump now searching the new channel.
 - Action: Upgrade a stopped single-server installation with a backup, start the new bot, and inspect its original server’s `/cap_status` before sending more messages.
   Expected: Existing daily counts and overrides import once into the owning server. Other servers start independently; restarting does not re-import stale legacy counts.

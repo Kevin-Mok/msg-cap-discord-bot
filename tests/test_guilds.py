@@ -156,10 +156,48 @@ class GuildTests(unittest.IsolatedAsyncioTestCase):
         controller = self.client.controllers[10]
         await controller.sync_commands(10)
         names = {cmd.name for cmd in self.client.tree.get_commands(guild=discord.Object(id=10))}
-        self.assertEqual(len(names), 7)
+        self.assertEqual(len(names), 8)
         self.assertIn('cap_channel', names)
+        self.assertIn('cap_reader', names)
         self.assertIs(self.client._connection._command_tree, self.client.tree)
         self.assertIs(controller.http, self.client.http)
+
+    async def test_reader_reactions_update_only_the_matching_server_jump(self):
+        from test_reader_jump import Reaction
+        clock = [0.0]
+        messages = {}
+        async def history(cid, **kwargs):
+            for message in messages[cid]:
+                yield message
+        for cid in (123, 456):
+            await self.configure(cid)
+            channel = self.channels[cid]
+            controller = self.client.controllers[channel.guild.id]
+            controller.reader_jump.set_reader(8)
+            controller.dashboard.monotonic = lambda: clock[0]
+            controller.dashboard.delete = AsyncMock()
+            messages[cid] = []
+            for mid in (cid * 10, cid * 10 + 1):
+                message = self.message(cid, mid)
+                message.type = discord.MessageType.default
+                message.reactions = []
+                message.jump_url = f'https://discord.com/channels/{channel.guild.id}/{cid}/{mid}'
+                messages[cid].append(message)
+            channel.history = lambda _cid=cid, **kwargs: history(_cid, **kwargs)
+            channel.fetch_message = AsyncMock(side_effect=lambda mid, _cid=cid: next(m for m in messages[_cid] if m.id == mid))
+            channel.send = AsyncMock(return_value=SimpleNamespace(id=cid * 100))
+            await controller.dashboard.refresh()
+        self.assertTrue(self.client.intents.guild_reactions)
+        self.assertFalse(self.client.intents.message_content)
+        messages[123][0].reactions = [Reaction(normal=[8])]
+        clock[0] += 5
+        await self.client.on_raw_reaction_add(SimpleNamespace(channel_id=123, user_id=8))
+        for controller in self.client.controllers.values():
+            await controller.dashboard.refresh()
+        self.assertEqual(self.channels[123].send.call_args.kwargs['view'].children[0].url,
+                         messages[123][1].jump_url)
+        self.assertEqual(self.channels[456].send.call_args.kwargs['view'].children[0].url,
+                         messages[456][0].jump_url)
 
     async def test_failed_save_keeps_current_controller_active(self):
         await self.configure(123)

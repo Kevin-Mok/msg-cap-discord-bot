@@ -14,3 +14,7 @@
 
 ## 2026-10-02 — Recoverable channel onboarding
 - Channel access failure must leave the Gateway online for mention-based setup. Route setup before the configured-channel filter, validate permissions before persistence, and cancel terminal readers without executor threads. Serialize recovery with message and dashboard work.
+
+## 2026-10-03 — Direct links and restart history
+- A public Discord URL button needs a selected reader known before clicking. Rebuild dependent reader/recovery objects when replacing a tracker; invalidate links at local midnight and discard scans if the selected reader changes during an await.
+- Restart backfill must merge a complete snapshot atomically, preserve saved sent totals and reset windows, and deduplicate gateway events. Exclude setup/sync requests just as live counting does. Discord history cannot recover messages created and deleted entirely offline.

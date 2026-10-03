@@ -269,10 +269,10 @@ class DiscordFixture(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(importlib.util.find_spec('discord'), 'Install requirements for Discord adapter checks')
 class DiscordAdapterTests(DiscordFixture):
-    async def test_real_client_uses_only_guild_message_intents_no_cache(self):
+    async def test_real_client_uses_only_guild_message_reaction_intents_no_cache(self):
         import discord
         self.assertEqual(self.client.intents.value,
-                         discord.Intents.guilds.flag | discord.Intents.guild_messages.flag)
+                         discord.Intents.guilds.flag | discord.Intents.guild_messages.flag | discord.Intents.guild_reactions.flag)
         self.assertFalse(self.client.intents.message_content)
         self.assertEqual(len(self.client.cached_messages), 0)
 

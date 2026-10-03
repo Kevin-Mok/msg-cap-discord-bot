@@ -3,7 +3,7 @@
 # Discord Message Cap
 <br clear="left" />
 
-A small standalone Discord bot for channel moderators who want a shared daily message budget. It counts each person's messages, keeps a sticky scoreboard near the bottom of one channel per server, and randomly replaces messages after the daily cap. The project demonstrates persistent event accounting, native slash-command controls, bounded background work, and deterministic tests with two Python runtime modules and one Discord connection.
+A small standalone Discord bot for channel moderators who want a shared daily message budget. It counts each person's messages, keeps a sticky scoreboard near the bottom of one channel per server, and randomly replaces messages after the daily cap. The project demonstrates persistent event accounting, native slash-command controls, bounded background work, and deterministic tests with a small Python runtime and one Discord connection.
 
 ## Tech Stack And Why Chosen
 
@@ -19,7 +19,7 @@ Browse: [Setup](#setup) · [Slash commands](#discord-slash-commands) · [Smoke t
 
 Invite the same bot to multiple servers. In **each server**, run `/cap_channel channel:#your-channel` as a member with **Manage Server** or **Administrator**. If the slash command is missing, select the bot’s actual mention and send `@Twitter Cap channel here` in the desired channel. This creates or changes only that server’s monitored channel.
 
-Each server has separate daily counts, default caps, personal overrides, reset windows, and scoreboard messages—even when the same user is present in several servers. `/cap_default` changes only the invoking server. Channel setup rejects targets from another server. Changing channels starts a fresh daily scope for that server and leaves the old channel’s messages untouched.
+Each server has separate daily counts, default caps, personal overrides, reset windows, and scoreboard messages—even when the same user is present in several servers. `/cap_default` changes only the invoking server. Channel setup rejects targets from another server. Changing channels rebuilds that server's daily scope from today's surviving messages in the new channel and leaves the old channel’s messages untouched.
 
 ## Daily behavior
 
@@ -30,6 +30,14 @@ The scoreboard shows only users with an explicit personal cap. Each row shows th
 In the configured SaucyBot workflow, its direct reply removes the referenced human-authored message after the response arrives. This cleanup is limited to SaucyBot and the monitored channel.
 
 The bot replaces its status batch after activity, at most once every five seconds. This returns the scoreboard near the bottom; Discord cannot permanently anchor a message there. Large scoreboards use multiple messages. At local midnight, tracking and the displayed day reset without deleting yesterday's human messages.
+
+### Jump directly to the oldest unreacted tweet
+
+After restarting the updated bot, run `/cap_reader user:@YourWife` in the monitored channel as a moderator, selecting her Discord account. The bottom summary gains **Jump to unreacted**: tapping it opens today's oldest surviving post she has not reacted to, directly in Discord. The button uses the selected reader for everyone who clicks it. Run `/cap_reader` without a member to remove the button.
+
+Any reaction by that reader, including a super reaction, marks the post seen for this feature. Other people's reactions do not. Removing the reader's last reaction makes the post eligible again. The search includes human posts and SaucyBot posts, skips the reader's own posts, other bots, webhooks, system messages and setup/sync requests, and uses the configured timezone (America/Toronto by default). It reads Discord history independently of quota resets and messages observed while online; Message Content intent stays off.
+
+The link refreshes with activity and reaction changes, normally within five seconds, and rechecks every minute for missed events. **All caught up today** disables the button when nothing is left. A failed or timed-out lookup disables it temporarily and retries; it does not claim the reader is caught up. History requests have a ten-second time budget, and a reaction/deletion can briefly race a displayed link. Reader selection survives restarts and counter resets; current history and reactions rebuild the destination.
 
 ## Setup
 
@@ -78,7 +86,7 @@ Run `/cap_channel channel:#your-channel` in that server. You can change a workin
 @Twitter Cap channel here
 ```
 
-`@Twitter Cap channel #your-channel` (a real channel mention) or a numeric channel ID also works. Requires **Manage Server** or **Administrator**. The target must be in the same server. The bot checks View Channel, Send Messages, Read Message History, and Manage Messages before saving. It starts counting and registers all seven slash commands automatically; then try `/cap_help`. Setup messages do not consume allowance.
+`@Twitter Cap channel #your-channel` (a real channel mention) or a numeric channel ID also works. Requires **Manage Server** or **Administrator**. The target must be in the same server. The bot checks View Channel, Send Messages, Read Message History, and Manage Messages before saving. It starts counting and registers all eight slash commands automatically; then try `/cap_help`. Setup messages do not consume allowance.
 
 If the initial channel is inaccessible and no server is configured, an interactive terminal offers a replacement ID; press Enter to configure in Discord. The bot stays online. Other servers continue working if one server’s channel is unavailable.
 
@@ -104,6 +112,7 @@ Use cap/status/reset commands in **this server’s configured text channel**. `/
 | `/cap_status` | Everyone | Show your effective cap, sent/retained counts, remaining allowance, accounting window, channel, timezone, and next reset. |
 | `/cap_status user:@Alice` | Everyone | Inspect another member’s status privately, including bots. |
 | `/cap_help` | Everyone | Show command examples and explain random replacement and reset. |
+| `/cap_reader user:@Alice` | Moderators | Set the reader whose reactions determine the summary's direct jump button; omit the member to remove it. |
 | `/cap_user user:@Alice limit:25` | Moderators | Save a personal cap; report the previous and new effective limits. |
 | `/cap_default limit:50` | Moderators | Change and save the channel default immediately; personal overrides remain. |
 | `/cap_clear user:@Alice` | Moderators | Remove Alice's personal cap and exempt her from all caps until `/cap_user` assigns one. |
@@ -142,6 +151,10 @@ CLI setup changes require a restart and supply login/initial defaults. Existing 
 
 Each server stores owner-only `config.json` and `data.sqlite3` under `guild_data/<guild-id>/`, ignored by Git. These configs contain credentials; keep the whole directory private. SQLite preserves observed sent counts, retained message IDs, status IDs, personal overrides, and reset windows across restarts. On first upgrade, the legacy database is copied only to the verified server owning the original channel; existing per-server databases are never overwritten. The original database is retained as a backup. Back up the global config and entire guild_data directory while stopped. Existing version-1 databases migrate automatically without resetting counts or status IDs; keep a stopped-process backup before upgrading. Do not replace the database to enable commands. Message bodies are not stored. Already-deleted candidates are removed and selection retries. Transient transport failures are logged and the counter retries on a later refresh; local database failures stop tracking rather than silently losing accounting. Permission/API failures are logged and failed deletions are not reported as successful; fix channel permissions before relying on cap enforcement.
 
-Only messages observed while the bot is running are tracked. Messages sent offline are not backfilled. Offline/manual deletions can temporarily make retained counts stale until candidates are checked. Discord API actions and SQLite writes cannot form one atomic transaction, so a crash at that boundary can also leave state needing reconciliation. This is an MVP for one process and one channel per server, not a strict moderation guarantee during outages.
+Restarts preserve saved sent counts and reconcile today's surviving messages from Discord history. Previously recorded IDs are not counted twice; surviving messages sent offline are added, and deleted messages are removed from retained counts without refunding sent totals. Recovery respects the configured timezone and moderator reset windows, and never deletes old posts to enforce a cap retroactively. A complete snapshot is applied atomically; a failed or ten-second timed-out fetch leaves saved counts intact and retries after 30 seconds. Accounting can briefly queue during recovery.
+
+Messages both posted and deleted while the bot was offline cannot be recovered from Discord history. Offline/manual deletions can temporarily make retained counts stale until reconciliation or candidate checks. Discord API actions and SQLite writes cannot form one atomic transaction. Keep the saved databases: history alone cannot reconstruct deleted posts' sent counts. This is an MVP for one process and one channel per server, not a strict moderation guarantee during outages.
 
 Automated checks exercise offline behavior. A real token and test channel are needed to validate invitation, permissions, deletion, and sticky display. See [the slash-command plan](plans/discord-cap-slash-commands.md) for current verification and [the original implementation plan](plans/discord-message-cap-mvp.md) for baseline acceptance and [the accepted slash-command prompt](prompts/discord-cap-slash-commands.md) for the command implementation contract. Offline checks do not verify live slash-command registration or Discord interaction behavior.
+
+For ideas to improve posting, reading, reacting, and revisiting tweets together, use the [tweet-sharing quick-wins prompt](prompts/tweet-sharing-quick-wins.md) in a fresh Astra Ultra chat with this repository open. It requests read-only recommendations and three bounded implementation prompts.
