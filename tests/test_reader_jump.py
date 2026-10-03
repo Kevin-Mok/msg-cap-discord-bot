@@ -68,7 +68,9 @@ class ReaderJumpTests(unittest.IsolatedAsyncioTestCase):
         self.messages.append(message)
         return message
 
-    async def select_reader(self, user=None):
+    async def select_reader(self, user=None, source=8):
+        if source is not None:
+            await self.invoke('cap_source', FakeInteraction(self.admin), user=self.member(source))
         interaction = FakeInteraction(self.admin)
         await self.invoke('cap_reader', interaction, user=user or self.user)
         self.assertTrue(interaction.deferred)
@@ -98,6 +100,7 @@ class ReaderJumpTests(unittest.IsolatedAsyncioTestCase):
         target = self.message(4, author=bot.REPLY_CLEANUP_BOT_ID, bot_author=True,
                               kind=discord.MessageType.reply)
         await self.select_reader()
+        await self.invoke('cap_source', FakeInteraction(self.admin), user=self.member(bot.REPLY_CLEANUP_BOT_ID))
         self.assertEqual((await self.button()).url, target.jump_url)
 
     async def test_burst_reaction_also_marks_seen_and_caught_up_has_no_link(self):
@@ -229,8 +232,8 @@ class ReaderJumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.client.reader_jump.view().children[0].url)
 
     async def test_changing_reader_during_scan_cannot_publish_previous_readers_target(self):
-        old = self.message(8, author=8)
-        newer = self.message(9, author=10)
+        old = self.message(8, author=8, reactions=[Reaction(normal=[10])])
+        newer = self.message(9, author=8)
         entered, resume = asyncio.Event(), asyncio.Event()
         async def fetch(mid):
             entered.set()
@@ -240,7 +243,7 @@ class ReaderJumpTests(unittest.IsolatedAsyncioTestCase):
         await self.select_reader()
         task = asyncio.create_task(self.client.dashboard.refresh())
         await entered.wait()
-        await self.select_reader(user=self.member(8))
+        await self.select_reader(user=self.member(10), source=None)
         resume.set()
         await task
         self.assertNotEqual(self.sent[-1][1]['view'].children[0].url, old.jump_url)
@@ -254,3 +257,70 @@ class ReaderJumpTests(unittest.IsolatedAsyncioTestCase):
         target = self.message(9, content='<@999>')
         await self.select_reader()
         self.assertEqual((await self.button()).url, target.jump_url)
+
+
+    async def test_no_source_hides_jump_even_with_reader_selected(self):
+        self.message(8)
+        await self.select_reader(source=None)
+        await self.client.dashboard.refresh()
+        self.assertIsNone(self.sent[-1][1].get('view'))
+
+    async def test_slash_source_limits_jump_to_selected_bot(self):
+        self.message(8)
+        target = self.message(9, author=222, bot_author=True)
+        await self.select_reader()
+        interaction = FakeInteraction(self.admin)
+        source = self.member(222)
+        source.bot = True
+        await self.invoke('cap_source', interaction, user=source)
+        self.assertTrue(interaction.messages[-1]['ephemeral'])
+        self.assertEqual((await self.button()).url, target.jump_url)
+
+
+    async def test_clearing_source_removes_button_without_changing_reader(self):
+        self.message(8)
+        await self.select_reader()
+        await self.button()
+        await self.invoke('cap_source', FakeInteraction(self.admin), user=None)
+        self.clock += 5
+        await self.client.dashboard.refresh()
+        self.assertIsNone(self.sent[-1][1].get('view'))
+        self.assertEqual(self.client.reader_jump.reader_id, 7)
+        self.assertIsNone(self.client.reader_jump.source_id)
+
+    async def test_source_permissions_reject_nonmoderator_wrong_channel_and_self(self):
+        for interaction, source in [(FakeInteraction(self.user), self.member(222)),
+                                    (FakeInteraction(self.admin, channel_id=555), self.member(222)),
+                                    (FakeInteraction(self.admin, guild_id=None), self.member(222)),
+                                    (FakeInteraction(self.admin), self.member(999))]:
+            await self.invoke('cap_source', interaction, user=source)
+            self.assertFalse(interaction.deferred)
+            self.assertIsNone(self.client.reader_jump.source_id)
+
+    async def test_changing_source_during_scan_discards_previous_target(self):
+        old = self.message(8)
+        target = self.message(9, author=222, bot_author=True)
+        entered, resume = asyncio.Event(), asyncio.Event()
+        async def fetch(mid):
+            entered.set()
+            await resume.wait()
+            return await self.fetch(mid)
+        self.channel.fetch_message = fetch
+        await self.select_reader()
+        task = asyncio.create_task(self.client.dashboard.refresh())
+        await entered.wait()
+        await self.invoke('cap_source', FakeInteraction(self.admin), user=self.member(222))
+        resume.set()
+        await task
+        self.assertNotEqual(self.sent[-1][1]['view'].children[0].url, old.jump_url)
+        self.clock += 5
+        self.assertEqual((await self.button()).url, target.jump_url)
+
+    async def test_source_with_only_other_authors_is_caught_up(self):
+        self.message(8)
+        self.message(9, author=333, bot_author=True)
+        await self.select_reader(source=222)
+        button = await self.button()
+        self.assertTrue(button.disabled)
+        self.assertIn('caught up', button.label.lower())
+        self.assertIsNone(button.url)

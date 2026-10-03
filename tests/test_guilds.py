@@ -156,9 +156,10 @@ class GuildTests(unittest.IsolatedAsyncioTestCase):
         controller = self.client.controllers[10]
         await controller.sync_commands(10)
         names = {cmd.name for cmd in self.client.tree.get_commands(guild=discord.Object(id=10))}
-        self.assertEqual(len(names), 8)
+        self.assertEqual(len(names), 9)
         self.assertIn('cap_channel', names)
         self.assertIn('cap_reader', names)
+        self.assertIn('cap_source', names)
         self.assertIs(self.client._connection._command_tree, self.client.tree)
         self.assertIs(controller.http, self.client.http)
 
@@ -174,6 +175,7 @@ class GuildTests(unittest.IsolatedAsyncioTestCase):
             channel = self.channels[cid]
             controller = self.client.controllers[channel.guild.id]
             controller.reader_jump.set_reader(8)
+            controller.reader_jump.set_source(7)
             controller.dashboard.monotonic = lambda: clock[0]
             controller.dashboard.delete = AsyncMock()
             messages[cid] = []

@@ -244,7 +244,7 @@ class SlashTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_commands_have_native_options_and_permission_defaults(self):
         names = {c.name for c in self.client.tree.get_commands()}
-        self.assertEqual(names, {'cap_user', 'cap_default', 'cap_clear', 'cap_status', 'cap_reset', 'cap_help', 'cap_reader'})
+        self.assertEqual(names, {'cap_user', 'cap_default', 'cap_clear', 'cap_status', 'cap_reset', 'cap_help', 'cap_reader', 'cap_source'})
         command = self.client.tree.get_command('cap_user')
         self.assertEqual([(p.name, p.type) for p in command.parameters],
                          [('user', self.discord.AppCommandOptionType.user), ('limit', self.discord.AppCommandOptionType.integer)])

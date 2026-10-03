@@ -13,22 +13,22 @@ import discord
 LOG = logging.getLogger('messagecap')
 
 
-def saved_reader(connection: sqlite3.Connection) -> int | None:
-    row = connection.execute("SELECT value FROM meta WHERE key='reader_id'").fetchone()
+def saved_selection(connection: sqlite3.Connection, key: str) -> int | None:
+    row = connection.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     if row is None:
         return None
     value = row[0]
     if not isinstance(value, str) or not value.isascii() or not value.isdecimal() or not 0 < int(value) < 2**64:
-        raise ValueError('Invalid saved reader ID; restore a database backup.')
+        raise ValueError(f'Invalid saved {key}; restore a database backup.')
     return int(value)
 
 
 class ReaderJump:
     def __init__(self, connection: sqlite3.Connection, tz: ZoneInfo,
-                 now: Callable[[], datetime], tweet_bot_id: int):
+                 now: Callable[[], datetime]):
         self.connection, self.tz, self.now = connection, tz, now
-        self.tweet_bot_id = tweet_bot_id
-        self.reader_id = saved_reader(connection)
+        self.reader_id = saved_selection(connection, 'reader_id')
+        self.source_id = saved_selection(connection, 'source_id')
         self.url: str | None = None
         self.available = False
         self.dirty = True
@@ -37,14 +37,23 @@ class ReaderJump:
         self.generation = 0
 
     def set_reader(self, user_id: int | None) -> None:
+        self.set_selection('reader_id', user_id)
+
+    def set_source(self, user_id: int | None) -> None:
+        self.set_selection('source_id', user_id)
+
+    def set_selection(self, key: str, user_id: int | None) -> None:
         if user_id is not None and (type(user_id) is not int or not 0 < user_id < 2**64):
             raise ValueError('Choose a valid server member.')
         with self.connection:
             if user_id is None:
-                self.connection.execute("DELETE FROM meta WHERE key='reader_id'")
+                self.connection.execute('DELETE FROM meta WHERE key=?', (key,))
             else:
-                self.connection.execute("INSERT OR REPLACE INTO meta VALUES ('reader_id', ?)", (str(user_id),))
-        self.reader_id = user_id
+                self.connection.execute('INSERT OR REPLACE INTO meta VALUES (?, ?)', (key, str(user_id)))
+        if key == 'reader_id':
+            self.reader_id = user_id
+        else:
+            self.source_id = user_id
         self.generation += 1
         self.url, self.available, self.dirty = None, False, True
         self.last_attempt = float('-inf')
@@ -62,13 +71,12 @@ class ReaderJump:
         return False
 
     async def find_oldest(self, channel: discord.TextChannel, own_id: int, start: datetime,
-                          end: datetime, reader_id: int) -> str | None:
+                          end: datetime, reader_id: int, source_id: int) -> str | None:
         after = discord.Object(id=discord.utils.time_snowflake(start) - 1)
         before = discord.Object(id=discord.utils.time_snowflake(end, high=True))
         async for message in channel.history(after=after, before=before, oldest_first=True, limit=None):
-            if (message.author.id in (own_id, reader_id) or message.webhook_id is not None
-                    or message.type not in (discord.MessageType.default, discord.MessageType.reply)
-                    or (message.author.bot and message.author.id != self.tweet_bot_id)):
+            if (message.author.id != source_id or message.author.id in (own_id, reader_id) or message.webhook_id is not None
+                    or message.type not in (discord.MessageType.default, discord.MessageType.reply)):
                 continue
             words = message.content.lower().split() if not message.author.bot else []
             if (len(words) >= 2 and words[0] in (f'<@{own_id}>', f'<@!{own_id}>')
@@ -86,12 +94,12 @@ class ReaderJump:
         return None
 
     async def refresh(self, channel: discord.TextChannel, own_id: int, revision: int, clock: float) -> bool:
-        reader_id = self.reader_id
-        if reader_id is None:
+        reader_id, source_id = self.reader_id, self.source_id
+        if reader_id is None or source_id is None:
             return False
         now = self.now()
         day = now.astimezone(self.tz).date()
-        key = (revision, day, reader_id)
+        key = (revision, day, reader_id, source_id)
         interval = 5 if self.dirty or key != self.key or not self.available else 60
         day_changed = self.key is not None and self.key[1] != day
         if not day_changed and clock - self.last_attempt < interval:
@@ -103,7 +111,7 @@ class ReaderJump:
         start = datetime.combine(day, datetime.min.time(), tzinfo=self.tz)
         try:
             async with asyncio.timeout(10):
-                url = await self.find_oldest(channel, own_id, start, now, reader_id)
+                url = await self.find_oldest(channel, own_id, start, now, reader_id, source_id)
             available = self.now().astimezone(self.tz).date() == day
             if not available:
                 url = None
@@ -116,7 +124,7 @@ class ReaderJump:
         return previous != (self.url, self.available)
 
     def view(self) -> discord.ui.View | None:
-        if self.reader_id is None:
+        if self.reader_id is None or self.source_id is None:
             return None
         view = discord.ui.View(timeout=None)
         if self.available and self.url is not None:

@@ -10,3 +10,6 @@
 - Verification: approved repository/source reads exited 0. Feature checks will be recorded in [the implementation plan](../../plans/unreacted-tweet-jump.md).
 - Follow-up: repair sandbox initialization in the execution environment; no bot runtime fix is needed.
 - Additional inspection failures: an optional cache inventory returned exit 2 because one searched cache directory did not exist; the reviewer also searched for a nonexistent optional `pyproject.toml`. Both searches were read-only and returned their useful existing-path results. Use observed paths for subsequent reads. The existing cached Pyright executable was located successfully.
+
+- Source-filter follow-up: initial inspection again failed before execution with the same bwrap error. Approved reads succeeded; initial `git status --short` was clean. An optional `.agent` inventory also found no repo-local plan contract; the canonical contract was read instead.
+- Source review inspection: a read-only search guessed nonexistent `multi_server.py` and `tests/test_multi_server.py` (exit 2). Reviewer switched to observed `guild_bot.py` and `tests/test_guilds.py`; no files changed in the failed read.

@@ -33,9 +33,9 @@ The bot replaces its status batch after activity, at most once every five second
 
 ### Jump directly to the oldest unreacted tweet
 
-After restarting the updated bot, run `/cap_reader user:@YourWife` in the monitored channel as a moderator, selecting her Discord account. The bottom summary gains **Jump to unreacted**: tapping it opens today's oldest surviving post she has not reacted to, directly in Discord. The button uses the selected reader for everyone who clicks it. Run `/cap_reader` without a member to remove the button.
+After restarting the updated bot, run `/cap_source user:@SaucyBot` and `/cap_reader user:@YourWife` in the monitored channel as a moderator, selecting SaucyBot as the posting source and her Discord account as the reader. The bottom summary gains **Jump to unreacted**: tapping it opens today's oldest surviving post **from the selected source** she has not reacted to, directly in Discord. The button uses the selected reader for everyone who clicks it. Human posts are skipped when SaucyBot is selected. Both settings persist per server; the button is hidden until both are set. Run `/cap_reader` or `/cap_source` without a member to remove the button.
 
-Any reaction by that reader, including a super reaction, marks the post seen for this feature. Other people's reactions do not. Removing the reader's last reaction makes the post eligible again. The search includes human posts and SaucyBot posts, skips the reader's own posts, other bots, webhooks, system messages and setup/sync requests, and uses the configured timezone (America/Toronto by default). It reads Discord history independently of quota resets and messages observed while online; Message Content intent stays off.
+Any reaction by that reader, including a super reaction, marks the post seen for this feature. Other people's reactions do not. Removing the reader's last reaction makes the post eligible again. The search includes only the selected source's posts (human or bot), skips the reader's own posts, this bot, webhooks, system messages and setup/sync requests, and uses the configured timezone (America/Toronto by default). It reads Discord history independently of quota resets and messages observed while online; Message Content intent stays off.
 
 The link refreshes with activity and reaction changes, normally within five seconds, and rechecks every minute for missed events. **All caught up today** disables the button when nothing is left. A failed or timed-out lookup disables it temporarily and retries; it does not claim the reader is caught up. History requests have a ten-second time budget, and a reaction/deletion can briefly race a displayed link. Reader selection survives restarts and counter resets; current history and reactions rebuild the destination.
 
@@ -86,7 +86,7 @@ Run `/cap_channel channel:#your-channel` in that server. You can change a workin
 @Twitter Cap channel here
 ```
 
-`@Twitter Cap channel #your-channel` (a real channel mention) or a numeric channel ID also works. Requires **Manage Server** or **Administrator**. The target must be in the same server. The bot checks View Channel, Send Messages, Read Message History, and Manage Messages before saving. It starts counting and registers all eight slash commands automatically; then try `/cap_help`. Setup messages do not consume allowance.
+`@Twitter Cap channel #your-channel` (a real channel mention) or a numeric channel ID also works. Requires **Manage Server** or **Administrator**. The target must be in the same server. The bot checks View Channel, Send Messages, Read Message History, and Manage Messages before saving. It starts counting and registers all nine slash commands automatically; then try `/cap_help`. Setup messages do not consume allowance.
 
 If the initial channel is inaccessible and no server is configured, an interactive terminal offers a replacement ID; press Enter to configure in Discord. The bot stays online. Other servers continue working if one server’s channel is unavailable.
 
@@ -112,6 +112,7 @@ Use cap/status/reset commands in **this server’s configured text channel**. `/
 | `/cap_status` | Everyone | Show your effective cap, sent/retained counts, remaining allowance, accounting window, channel, timezone, and next reset. |
 | `/cap_status user:@Alice` | Everyone | Inspect another member’s status privately, including bots. |
 | `/cap_help` | Everyone | Show command examples and explain random replacement and reset. |
+| `/cap_source user:@SaucyBot` | Moderators | Select the only posting account eligible for unreacted jumps (human or bot); omit the member to disable. |
 | `/cap_reader user:@Alice` | Moderators | Set the reader whose reactions determine the summary's direct jump button; omit the member to remove it. |
 | `/cap_user user:@Alice limit:25` | Moderators | Save a personal cap; report the previous and new effective limits. |
 | `/cap_default limit:50` | Moderators | Change and save the channel default immediately; personal overrides remain. |

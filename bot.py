@@ -668,7 +668,7 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                                    delete=self.delete_message)
             self.recovery = RestartRecovery(self.tracker)
             self.reader_jump = ReaderJump(store.connection, self.tracker.tz,
-                                          lambda: self.tracker.now(), REPLY_CLEANUP_BOT_ID)
+                                          lambda: self.tracker.now())
             self.dashboard = Dashboard(store, self.tracker, self.send_status, self.delete_message,
                                        prepare=self.prepare_status)
 
@@ -723,7 +723,25 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                     self.tracker.revision += 1
                 text = ('Jump button removed.' if user is None else
                         f'The summary jump button now follows **{discord.utils.escape_markdown(user.display_name)}**. '
-                        'It opens today’s oldest tweet they haven’t reacted to. Updates on the next summary refresh; selection survives restarts.')
+                        'With /cap_source set, it opens today’s oldest post from that source they haven’t reacted to. Updates on the next summary refresh; selection survives restarts.')
+                await reply(interaction, text)
+
+            @self.tree.command(name='cap_source', description='Choose whose posts the unreacted jump button targets.')
+            @app_commands.guild_only()
+            @app_commands.default_permissions(manage_messages=True)
+            @app_commands.describe(user='Posting member or bot, e.g. SaucyBot; leave blank to disable the jump')
+            async def cap_source(interaction: discord.Interaction, user: discord.Member | None = None):
+                if not await self.authorize(interaction, moderator=True, target=user):
+                    return
+                await interaction.response.defer(ephemeral=True)
+                async with self.tracker.lock:
+                    self.tracker._rollover()
+                    self.reader_jump.set_source(user.id if user is not None else None)
+                    self.tracker.revision += 1
+                text = ('Jump source cleared; button removed.' if user is None else
+                        f'Jump source set to **{discord.utils.escape_markdown(user.display_name)}**. '
+                        'Only their posts are jump targets. Set /cap_reader to choose whose reactions mark them seen. '
+                        'Updates on the next summary refresh; selection survives restarts.')
                 await reply(interaction, text)
 
             @self.tree.command(name='cap_user', description='Set a personal daily message cap for a member.')
@@ -832,6 +850,7 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                     '`/cap_channel channel:#channel` — set this server’s channel (Manage Server).\n'
                     '`/cap_status` — your allowance; choose a member to inspect theirs.\n'
                     '**Moderators · Manage Messages required**\n'
+                    '`/cap_source user:@SaucyBot` — jump only to their posts; omit user to disable.\n'
                     '`/cap_reader user:@member` — direct jump in the summary using their reactions; omit user to disable.\n'
                     '`/cap_user user:@member limit:25` — persistent personal cap.\n'
                     '`/cap_default limit:50` — default for members without an override.\n'
@@ -969,7 +988,7 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             self.tracker = tracker
             self.recovery = RestartRecovery(tracker)
             self.reader_jump = ReaderJump(store.connection, tracker.tz,
-                                          lambda: self.tracker.now(), REPLY_CLEANUP_BOT_ID)
+                                          lambda: self.tracker.now())
             self.dashboard = Dashboard(store, tracker, self.send_status, self.delete_message,
                                        prepare=self.prepare_status)
             self.channel = channel

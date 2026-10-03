@@ -13,10 +13,10 @@ The summary is periodically replaced by `Dashboard` in `bot.py`; `guild_bot.py` 
 ## Decisions and assumptions
 
 - One reader per server, selected once by a moderator with `/cap_reader user:@member`. A public URL button has the same destination for everyone; the intended reader is the user's wife.
-- Today uses the server's configured timezone. Search oldest first from local midnight, inclusive, across surviving human posts and SaucyBot posts. Exclude the selected reader's own messages, this bot, unrelated bots, webhooks, system messages, and setup/sync requests. Existing app behavior treats channel posts as tweets; content intent stays off.
+- Today uses the server's configured timezone. Search oldest first from local midnight, inclusive, across surviving posts from the explicitly selected source account (`/cap_source user:@member`, including bots). With no source selected, hide the button; never fall back to all authors. Exclude the selected reader's own messages, this bot, unrelated bots, webhooks, system messages, and setup/sync requests. Existing app behavior treats channel posts as tweets; content intent stays off.
 - Any normal or super reaction by the selected reader marks the message seen. Other people's reactions do not. Removing all their reactions makes it eligible again.
 - Refresh with summary activity and reaction changes, with periodic reconciliation for missed events. No eligible message means a disabled caught-up button; failed lookup means a disabled unavailable button, never a stale target presented as current.
-- Persist only the reader ID separately from daily accounting; restart, resets, and rollover preserve the selection.
+- Persist the reader and source IDs separately from daily accounting; restart, resets, and rollover preserve the selection.
 
 ## Ordered implementation
 
@@ -50,3 +50,29 @@ Independent review found and verified fixes for midnight cache invalidation, rea
 Restart recovery fetches a complete snapshot under the accounting lock with a ten-second limit, commits once, and retries transient failures after 30 seconds. Previously saved sent totals remain authoritative for deleted posts. Messages created and deleted entirely while offline cannot be reconstructed. No schema change or configuration file change is required. Existing README work is one unrelated link at the end; all feature edits preserve that paragraph.
 
 Cursor handoff: Read this plan, `tasks/lessons.md`, and `docs/smoke-tests.md`. Run the automated commands above and the direct-jump smoke section in a test server. Preserve pre-existing dirty docs and never report a live Discord check as passed without observing it.
+
+## Source filter follow-up (2026-10-03)
+
+Purpose: only jump to posts by an explicitly slash-selected account, such as SaucyBot. Reader remains a separate human account. `/cap_source` without a user clears the source and hides the button. Both settings are per server and survive restarts/reset. Bot sources are allowed; own bot, webhooks, system messages, and reader posts remain excluded. No quota or cleanup behavior changes.
+
+Initial state: clean `git status --short`; no protected dirty files. Scope: reader module, command/help registration, defining reader and guild tests, README, smoke checks, this plan, and existing sandbox incident record. Rollback: revert this source-filter change; saved source metadata is harmless to the previous reader implementation.
+
+- [x] Inspect current selection and persistence.
+- [x] Observe RED for explicit source filtering and absent-source behavior.
+- [x] Implement source persistence, strict author filter, moderator command, cache invalidation.
+- [x] Verify reader/source changes during scans, clear/restart, permissions, and server isolation.
+- [x] Update README and smoke checks; run full regression, type check, and diff check.
+
+Manual: restart with `./scripts/run.sh`; `/cap_reader user:@reader`; `/cap_source user:@SaucyBot`; post human messages before SaucyBot messages, react as reader, verify direct target always belongs to SaucyBot. Clear `/cap_source` and verify the button disappears. Re-select and restart; selections persist. Live Discord checks pending.
+
+Cursor handoff: Read this plan and source-filter smoke entries, run the commands in Verification, then exercise source selection in a test server. Suggested commit: `fix: restrict unreacted jumps to selected source`.
+
+RED evidence: `.venv/bin/python -m unittest discover -s tests -p test_reader_jump.py -k source -v` exited 1 with two expected failures: an unset source still displayed a link, and `/cap_source` was absent. After implementation the 18 reader tests passed, exit 0.
+
+Source-filter verification: full offline suite passed **142 tests**, exit 0; cached Pyright reported **0 errors, 0 warnings, 0 informations**, exit 0. `git diff --check` passed, exit 0. Full-suite registration-count mismatch was fixed and recorded in [the postmortem](../docs/postmortem/2026-10-03-source-command-test-contract.md). README/smoke-test skills applied: source/reader setup, nine-command registration, and clear/restart procedures now match implementation. No tracked configuration was changed; refresh-config does not apply. Live Discord validation remains pending.
+
+Final source review: independent read-only review found no concrete bugs in filtering, persistence, per-guild wiring, clear behavior, or generation invalidation. Reader-change regression was kept independent of source changes; fresh focused verification passed 22 reader tests, exit 0.
+
+Session commit verification: fresh `.venv/bin/python -m unittest discover -s tests -q` passed 142 tests, exit 0; the cached Pyright command above reported zero issues, exit 0; `git diff --check` passed. README recruiter-sync audit passed using script source and `bot.py --help`: opening hook and stack rationale precede setup, install/day-to-day instructions and CLI options are accurate, and the new slash command is documented.
+
+Commit scope: session `01a103aa-5914-71e3-8424-3072a788efdd`. Installed session-scope helper returned `unsafe` (exit 0), reporting no detected shell writes or baseline. Used the skill's direct-write fallback: the conversation captured a clean pre-write status and successful edits to all ten dirty paths, including this plan, tests, README, smoke checks, and both incident docs. No pre-existing or unknown files are included. Push target is `main` → `origin/main` (`Kevin-Mok/msg-cap-discord-bot`).

@@ -30,7 +30,7 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
 ### Register commands from Discord
 
 - Action: After updating the code, restart once with Ctrl+C and `./scripts/run.sh`. As a member with Manage Server or Administrator, send `@Twitter Cap slash sync` in #twitter-cap, selecting the actual bot mention from Discord’s picker.
-  Expected: A public “Syncing slash commands…” reply changes to “Registered 8 slash commands” with their names, including `/cap_reader`. No ping occurs, the request does not increase your quota counters, and `/cap_help` becomes available. Message Content intent remains disabled.
+  Expected: A public “Syncing slash commands…” reply changes to “Registered 9 slash commands” with their names, including `/cap_reader` and `/cap_source`. No ping occurs, the request does not increase your quota counters, and `/cap_help` becomes available. Message Content intent remains disabled.
 - Action: Immediately send `@Twitter Cap sync`.
   Expected: A reply asks you to wait 30 seconds. No second registration occurs.
 - Action: Send the sync command as a member without Manage Server or Administrator.
@@ -38,24 +38,28 @@ Pass means the private commands respond, the sticky scoreboard refreshes, and th
 
 ## Direct jump and restart recovery
 
-Use two human accounts: one posting, one reading. Select the reader with Discord's native member picker; selecting the posting account would intentionally exclude that account's own messages.
+Use two human accounts and SaucyBot: one human posting account and one reader. Select the posting source with `/cap_source`; only that account’s posts are eligible. Select the reader with Discord's native member picker; selecting the posting account would intentionally exclude that account's own messages.
 
 - Action: ./scripts/run.sh
-  Expected: After stopping the previous process with Ctrl+C, the updated bot starts, restores saved counts and reader selection, and refreshes the sticky summary. No sudo is required.
+  Expected: After stopping the previous process with Ctrl+C, the updated bot starts, restores saved counts, reader and source selections, and refreshes the sticky summary. No sudo is required.
 - Action: /cap_reader user:@reader
-  Expected: As a moderator in the configured channel, receive a private confirmation. The bottom summary gains a jump button; this reader selection is shared by everyone viewing that summary. A non-moderator or bot target is rejected.
-- Action: Post three messages today from the other human account; react to the oldest as the selected reader, then wait for the summary refresh and tap Jump to unreacted.
+  Expected: As a moderator in the configured channel, receive a private confirmation. The bottom summary gains a jump button once a source is also set; this reader selection is shared by everyone viewing that summary. A non-moderator or bot target is rejected.
+- Action: /cap_source user:@SaucyBot
+  Expected: A moderator receives private confirmation. The jump searches only SaucyBot posts; human messages (including your own) and other bots are skipped.
+- Action: Generate three SaucyBot posts today with older human messages still present; react to the oldest as the selected reader, then wait for the summary refresh and tap Jump to unreacted.
   Expected: Discord opens the second message directly, with no intermediate bot reply. Someone else's reaction does not skip a message; any normal or super reaction by the reader does.
 - Action: Remove the reader's last reaction from the first message, wait at least five seconds, and tap the summary button again.
   Expected: The first message is the destination again. Deleting that target advances to the next eligible surviving message. A quota reset does not hide older posts from this jump.
 - Action: React as the reader to every eligible message from today.
-  Expected: The summary shows a disabled All caught up today button. Yesterday's posts, the reader's own posts, unrelated bots, webhooks and system messages are not jump targets. SaucyBot posts remain eligible.
+  Expected: The summary shows a disabled All caught up today button. Yesterday's posts, the reader's own posts, all authors except the selected source, webhooks and system messages are not jump targets.
 - Action: Note /cap_status sent and retained values, stop the bot, send two posts, delete one previously counted post, and restart with ./scripts/run.sh.
-  Expected: Recovery adds the two surviving offline posts exactly once, preserves previously saved sent totals, subtracts the deleted post from retained only, and makes no retroactive cap deletions. The reader setting persists and the jump reflects live reactions. Restart again: neither sent nor retained doubles. Messages created and deleted entirely during downtime cannot be recovered.
+  Expected: Recovery adds the two surviving offline posts exactly once, preserves previously saved sent totals, subtracts the deleted post from retained only, and makes no retroactive cap deletions. The reader and source settings persist and the jump reflects live reactions. Restart again: neither sent nor retained doubles. Messages created and deleted entirely during downtime cannot be recovered.
 - Action: Repeat restart after /cap_reset, and run the same checks in a second configured server.
-  Expected: Recovery respects the since-reset window; previous posts are not counted again. Each server retains its own reader and daily counts. The jump still considers all eligible posts from today, including those before a counter reset.
+  Expected: Recovery respects the since-reset window; previous posts are not counted again. Each server retains its own reader, source and daily counts. The jump still considers all eligible posts from today, including those before a counter reset.
 - Action: Temporarily deny Read Message History, trigger a reader reaction change, then restore permission.
   Expected: The jump becomes unavailable rather than falsely caught up; saved counts remain intact on a failed recovery. Lookups recover after permission is restored (reader retry on the next refresh; startup recovery retry within 30 seconds).
+- Action: /cap_source without a user, then re-select SaucyBot and restart.
+  Expected: Clearing the source hides the button while keeping the reader. Re-selecting and restarting restores the SaucyBot-only jump.
 - Action: /cap_reader
   Expected: As a moderator, remove the jump button without changing counts or caps.
 
