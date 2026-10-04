@@ -58,6 +58,8 @@ Use two human accounts and SaucyBot: one human posting account and one reader. S
   Expected: Recovery respects the since-reset window; previous posts are not counted again. Each server retains its own reader, source and daily counts. The jump still considers all eligible posts from today, including those before a counter reset.
 - Action: Temporarily deny Read Message History, trigger a reader reaction change, then restore permission.
   Expected: The jump becomes unavailable rather than falsely caught up; saved counts remain intact on a failed recovery. Lookups recover after permission is restored (reader retry on the next refresh; startup recovery retry within 30 seconds).
+- Action: In a test channel, create enough reacted source posts to trigger a ten-second scan timeout, followed by an unreacted source post; leave reactions unchanged and wait through retries.
+  Expected: Timeout warnings identify TimeoutError and an increasing completed-check count; the jump eventually reaches the unreacted post when individual requests finish within the budget. Removing a reader reaction while recovery is in progress makes that older post eligible again. After midnight yesterday's unreacted posts leave the today-only search.
 - Action: /cap_source without a user, then re-select SaucyBot and restart.
   Expected: Clearing the source hides the button while keeping the reader. Re-selecting and restarting restores the SaucyBot-only jump.
 - Action: /cap_reader

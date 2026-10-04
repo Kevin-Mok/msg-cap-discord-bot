@@ -21,3 +21,6 @@
 
 ## 2026-10-03 — Reply preservation and independent fixtures
 - SaucyBot reply arrival must preserve the human source and tweet URL; quota deletion remains per author for humans and SaucyBot. Reader fixtures should use explicit synthetic account IDs rather than a constant owned by an unrelated cleanup feature.
+
+## 2026-10-04 — Bounded scans must retain progress
+- A timeout around a multi-request Discord scan can starve forever if retries restart from the same reacted posts. Retain completed checks across incomplete attempts, invalidate on reader/source/day/reaction changes, and clear on success for periodic reconciliation. Log exception type and progress so timeout and HTTP failures are distinguishable.

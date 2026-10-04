@@ -35,6 +35,7 @@ class ReaderJump:
         self.last_attempt = float('-inf')
         self.key: tuple | None = None
         self.generation = 0
+        self.checked: set[int] = set()
 
     def set_reader(self, user_id: int | None) -> None:
         self.set_selection('reader_id', user_id)
@@ -54,6 +55,7 @@ class ReaderJump:
             self.reader_id = user_id
         else:
             self.source_id = user_id
+        self.checked = set()
         self.generation += 1
         self.url, self.available, self.dirty = None, False, True
         self.last_attempt = float('-inf')
@@ -71,7 +73,8 @@ class ReaderJump:
         return False
 
     async def find_oldest(self, channel: discord.TextChannel, own_id: int, start: datetime,
-                          end: datetime, reader_id: int, source_id: int) -> str | None:
+                          end: datetime, reader_id: int, source_id: int,
+                          checked: set[int]) -> str | None:
         after = discord.Object(id=discord.utils.time_snowflake(start) - 1)
         before = discord.Object(id=discord.utils.time_snowflake(end, high=True))
         async for message in channel.history(after=after, before=before, oldest_first=True, limit=None):
@@ -82,7 +85,10 @@ class ReaderJump:
             if (len(words) >= 2 and words[0] in (f'<@{own_id}>', f'<@!{own_id}>')
                     and (words[1] == 'channel' or words[1:] in (['sync'], ['slash', 'sync']))):
                 continue
+            if message.id in checked:
+                continue
             if await self.reacted(message, reader_id):
+                checked.add(message.id)
                 continue
             # The history page may have been fetched before a reaction or deletion.
             try:
@@ -91,6 +97,7 @@ class ReaderJump:
                 continue
             if not await self.reacted(current, reader_id):
                 return current.jump_url
+            checked.add(message.id)
         return None
 
     async def refresh(self, channel: discord.TextChannel, own_id: int, revision: int, clock: float) -> bool:
@@ -104,6 +111,10 @@ class ReaderJump:
         day_changed = self.key is not None and self.key[1] != day
         if not day_changed and clock - self.last_attempt < interval:
             return False
+        if self.dirty or self.key is None or self.key[1:] != key[1:]:
+            # Retain progress only for one interrupted scan, never across invalidation.
+            self.checked = set()
+        checked = self.checked
         previous = (self.url, self.available)
         self.last_attempt = clock
         self.key, self.dirty = key, False
@@ -111,13 +122,16 @@ class ReaderJump:
         start = datetime.combine(day, datetime.min.time(), tzinfo=self.tz)
         try:
             async with asyncio.timeout(10):
-                url = await self.find_oldest(channel, own_id, start, now, reader_id, source_id)
+                url = await self.find_oldest(channel, own_id, start, now, reader_id, source_id, checked)
+            checked.clear()
             available = self.now().astimezone(self.tz).date() == day
             if not available:
                 url = None
                 self.dirty = True
-        except (discord.HTTPException, OSError, aiohttp.ClientError):
-            LOG.warning('Could not refresh unreacted tweet jump in channel %s; retrying.', channel.id)
+        except (discord.HTTPException, OSError, aiohttp.ClientError) as error:
+            LOG.warning('Could not refresh unreacted tweet jump in channel %s (%s, HTTP status %s); '
+                        'retrying with %s reacted posts checked.', channel.id, type(error).__name__,
+                        getattr(error, 'status', None), len(checked))
             url, available = None, False
         if generation == self.generation:
             self.url, self.available = url, available

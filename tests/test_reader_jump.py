@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import discord
 import bot
@@ -151,6 +151,80 @@ class ReaderJumpTests(unittest.IsolatedAsyncioTestCase):
         self.channel.history = self.history
         self.clock += 5
         self.assertIsNotNone((await self.button()).url)
+
+    async def test_interrupted_reaction_scan_eventually_reaches_unreacted_post(self):
+        # Three individually fast requests exceed a single attempt's budget.
+        for hour in (8, 9, 10):
+            message = self.message(hour, reactions=[Reaction(normal=[7])])
+            original = message.reactions[0].users
+            async def slow_users(original=original, **kwargs):
+                await asyncio.sleep(0.03)
+                async for user in original(**kwargs):
+                    yield user
+            message.reactions[0].users = slow_users
+        target = self.message(11)
+        await self.select_reader()
+        jump = self.client.reader_jump
+        timeout = asyncio.timeout
+        with patch('reader_jump.asyncio.timeout', side_effect=lambda _: timeout(0.05)):
+            for attempt in range(5):
+                await jump.refresh(self.channel, 999, attempt, attempt * 5)
+                if jump.available:
+                    break
+        self.assertTrue(jump.available, 'Retries must advance past completed reaction checks')
+        self.assertEqual(jump.url, target.jump_url)
+
+    async def test_reaction_change_rewinds_interrupted_scan(self):
+        first = self.message(8, reactions=[Reaction(normal=[7])])
+        second = self.message(9, reactions=[Reaction(normal=[7])])
+        self.message(10)
+        await self.select_reader()
+        original = second.reactions[0].users
+        async def timeout_users(**kwargs):
+            raise TimeoutError('reaction rate limit wait')
+            yield
+        second.reactions[0].users = timeout_users
+        with self.assertLogs('messagecap', level='WARNING') as logs:
+            await self.client.reader_jump.refresh(self.channel, 999, 0, 0)
+        self.assertIn('TimeoutError', logs.output[0])
+        first.reactions = []
+        second.reactions[0].users = original
+        await self.client.on_raw_reaction_remove(SimpleNamespace(channel_id=123, user_id=7))
+        await self.client.reader_jump.refresh(self.channel, 999, 0, 5)
+        self.assertEqual(self.client.reader_jump.url, first.jump_url)
+
+    async def test_completed_retry_rechecks_missed_reaction_removal(self):
+        first = self.message(8, reactions=[Reaction(normal=[7])])
+        second = self.message(9, reactions=[Reaction(normal=[7])])
+        target = self.message(10)
+        await self.select_reader()
+        original = second.reactions[0].users
+        async def timeout_users(**kwargs):
+            raise TimeoutError('reaction rate limit wait')
+            yield
+        second.reactions[0].users = timeout_users
+        await self.client.reader_jump.refresh(self.channel, 999, 0, 0)
+        second.reactions[0].users = original
+        await self.client.reader_jump.refresh(self.channel, 999, 0, 5)
+        self.assertEqual(self.client.reader_jump.url, target.jump_url)
+        first.reactions = []  # Simulate a missed Gateway event.
+        await self.client.reader_jump.refresh(self.channel, 999, 0, 65)
+        self.assertEqual(self.client.reader_jump.url, first.jump_url)
+
+    async def test_reader_change_discards_partial_reaction_progress(self):
+        first = self.message(8, reactions=[Reaction(normal=[7])])
+        second = self.message(9, reactions=[Reaction(normal=[7])])
+        await self.select_reader()
+        original = second.reactions[0].users
+        async def timeout_users(**kwargs):
+            raise TimeoutError('reaction rate limit wait')
+            yield
+        second.reactions[0].users = timeout_users
+        await self.client.reader_jump.refresh(self.channel, 999, 0, 0)
+        second.reactions[0].users = original
+        await self.select_reader(user=self.member(10), source=None)
+        await self.client.reader_jump.refresh(self.channel, 999, 0, 5)
+        self.assertEqual(self.client.reader_jump.url, first.jump_url)
 
     async def test_reader_persists_through_restart_and_quota_reset(self):
         old = self.message(8)
