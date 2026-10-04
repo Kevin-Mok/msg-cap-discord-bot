@@ -12,6 +12,9 @@ import discord
 
 LOG = logging.getLogger('messagecap')
 
+# Allow a 50-post batch to wait for Discord's reaction buckets, including burst checks.
+SCAN_TIMEOUT_SECONDS = 120
+
 
 def saved_selection(connection: sqlite3.Connection, key: str) -> int | None:
     row = connection.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -121,7 +124,7 @@ class ReaderJump:
         generation = self.generation
         start = datetime.combine(day, datetime.min.time(), tzinfo=self.tz)
         try:
-            async with asyncio.timeout(10):
+            async with asyncio.timeout(SCAN_TIMEOUT_SECONDS):
                 url = await self.find_oldest(channel, own_id, start, now, reader_id, source_id, checked)
             checked.clear()
             available = self.now().astimezone(self.tz).date() == day

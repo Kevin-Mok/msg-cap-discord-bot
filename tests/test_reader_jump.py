@@ -152,6 +152,30 @@ class ReaderJumpTests(unittest.IsolatedAsyncioTestCase):
         self.clock += 5
         self.assertIsNotNone((await self.button()).url)
 
+    async def test_fifty_tweets_with_rate_limit_waits_finish_in_one_scan(self):
+        requests = 0
+        # Accelerate time 100x: four seconds of rate-limit wait becomes 40ms.
+        for _ in range(49):
+            reaction = Reaction(normal=[1], burst=[7])
+            original = reaction.users
+            async def paced_users(original=original, **kwargs):
+                nonlocal requests
+                requests += 1
+                if requests % 5 == 0:
+                    await asyncio.sleep(0.04)
+                async for user in original(**kwargs):
+                    yield user
+            reaction.users = paced_users
+            self.message(8, reactions=[reaction])
+        target = self.message(9)
+        await self.select_reader()
+        timeout = asyncio.timeout
+        with patch('reader_jump.asyncio.timeout', side_effect=lambda seconds: timeout(seconds / 100)):
+            await self.client.reader_jump.refresh(self.channel, 999, 0, 0)
+        self.assertTrue(self.client.reader_jump.available,
+                        'A 50-tweet scan must tolerate cumulative rate-limit waits')
+        self.assertEqual(self.client.reader_jump.url, target.jump_url)
+
     async def test_interrupted_reaction_scan_eventually_reaches_unreacted_post(self):
         # Three individually fast requests exceed a single attempt's budget.
         for hour in (8, 9, 10):
