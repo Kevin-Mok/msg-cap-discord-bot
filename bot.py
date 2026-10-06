@@ -287,6 +287,7 @@ class Tracker:
         self.store.scope(f'{channel_id}:{timezone_name}:{self.day}')
         self.users = {uid: (name, sent) for uid, name, sent in store.connection.execute('SELECT * FROM users')}
         self.seen = set()
+        self.deleted_ids: set[int] = set()
         self.retained: dict[int, dict[int, None]] = defaultdict(dict)
         self.owners = {}
         self.overrides = dict(store.connection.execute('SELECT user_id, cap FROM overrides WHERE channel_id=?', (channel_id,)))
@@ -311,6 +312,7 @@ class Tracker:
             self.day = day
             self.users.clear()
             self.seen.clear()
+            self.deleted_ids.clear()
             self.retained.clear()
             self.owners.clear()
             self.resets.clear()
@@ -321,6 +323,7 @@ class Tracker:
             self._rollover()
 
     def _removed(self, message_id: int) -> None:
+        self.deleted_ids.add(message_id)
         owner = self.owners.get(message_id)
         if owner is not None:
             self.store.removed(message_id)
@@ -367,17 +370,19 @@ class Tracker:
                     break
             return True
 
-    def _reconcile_history(self, messages: Sequence[tuple[int, int, str, datetime]], before_id: int) -> None:
+    def _reconcile_history(self, messages: Sequence[tuple[int, int, str, datetime]], before_id: int,
+                           *, protected_ids: set[int] | None = None) -> None:
         """Atomically merge a complete history snapshot while the caller holds lock."""
         surviving = {}
         for mid, uid, name, created_at in messages:
             reset_at = self.reset_at(uid)
-            if (mid >= before_id or created_at.astimezone(self.tz).date().isoformat() != self.day
+            if (mid in self.deleted_ids or mid >= before_id or created_at.astimezone(self.tz).date().isoformat() != self.day
                     or (reset_at is not None and created_at <= datetime.fromisoformat(reset_at))):
                 continue
             surviving[mid] = (uid, name)
         added = {mid: row for mid, row in surviving.items() if mid not in self.seen}
-        removed = [mid for mid in self.owners if mid < before_id and mid not in surviving]
+        removed = [mid for mid in self.owners if mid < before_id and mid not in surviving
+                   and mid not in (protected_ids or ())]
         with self.store.connection:
             for mid, (uid, name) in added.items():
                 self.store.connection.execute('INSERT INTO events VALUES (?, ?, 1, 1)', (mid, uid))
@@ -493,54 +498,7 @@ def render_dashboard(tracker: Tracker) -> list[str]:
     return chunks
 
 
-class Dashboard:
-    def __init__(self, store: Store, tracker: Tracker,
-                 send: Callable[[str], Awaitable[int]], delete: Delete,
-                 *, monotonic: Callable[[], float] = time.monotonic,
-                 prepare: Callable[[], Awaitable[None]] | None = None):
-        self.store, self.tracker = store, tracker
-        self.send, self.delete = send, delete
-        self.monotonic = monotonic
-        self.last_attempt = float('-inf')
-        self.published = -1  # Force replacement of persisted batch after restart.
-        self.lock = asyncio.Lock()
-        self.prepare = prepare
-
-    async def refresh(self) -> None:
-        async with self.lock:
-            await self.tracker.rollover()
-            if self.prepare is not None:
-                await self.prepare()
-            if self.published == self.tracker.revision or self.monotonic() - self.last_attempt < 5:
-                return
-            self.last_attempt = self.monotonic()
-            async with self.tracker.lock:
-                revision = self.tracker.revision
-                contents = render_dashboard(self.tracker)
-            try:
-                for message_id, channel_id in self.store.status_ids():
-                    if channel_id != self.tracker.channel_id:
-                        LOG.warning('Forgetting old counter %s in previous channel %s; remove it manually.', message_id, channel_id)
-                        self.store.forget_status(message_id)
-                        continue
-                    try:
-                        await self.delete(message_id)
-                    except MissingMessage:
-                        pass
-                    self.store.forget_status(message_id)
-                for text in contents:
-                    message_id = await self.send(text)
-                    self.store.remember_status(message_id, self.tracker.channel_id)
-                self.published = revision
-            except DeleteFailed:
-                LOG.error('Counter refresh failed in channel %s; check channel permissions and connectivity.', self.tracker.channel_id)
-
-    def removed(self, message_ids: Sequence[int]) -> None:
-        stored = {mid for mid, _ in self.store.status_ids()}
-        for message_id in message_ids:
-            if message_id in stored:
-                self.store.forget_status(message_id)
-                self.published = -1
+from dashboard import Dashboard
 
 
 def create_client(settings: Settings, store: Store, *, config_path: Path | None = None, gateway=None):
@@ -652,6 +610,9 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             self.worker = None
             self.channel_prompt = None
             self.runtime_lock = asyncio.Lock()
+            self.reader_task = None
+            self.dashboard_task = None
+            self.recovery_task = None
             self.startup_error = None
             self.tree = SlashTree(self)
             self.sync_attempted = False
@@ -667,16 +628,68 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                                    delete=self.delete_message)
             self.recovery = RestartRecovery(self.tracker)
             self.reader_jump = ReaderJump(store.connection, self.tracker.tz,
-                                          lambda: self.tracker.now())
+                                          lambda: self.tracker.now(), monotonic=lambda: self.dashboard.monotonic())
             self.dashboard = Dashboard(store, self.tracker, self.send_status, self.delete_message,
-                                       prepare=self.prepare_status)
+                                       prepare=self.prepare_status, edit=self.edit_status,
+                                       signature=self.reader_jump.signature)
 
         async def prepare_status(self):
-            if self.channel is not None and self.user is not None:
-                changed = await self.reader_jump.refresh(self.channel, self.user.id,
-                                                        self.tracker.revision, self.dashboard.monotonic())
-                if changed:
-                    self.dashboard.published = -1
+            if self.channel is None or self.user is None or self.tracker.retired:
+                return
+            self.reader_jump.ensure_scope(self.channel)
+            if self.reader_task is None or self.reader_task.done():
+                self.reader_task = asyncio.create_task(self.refresh_reader(), name='reader-reconciliation')
+
+        async def refresh_reader(self):
+            try:
+                for _ in range(2):
+                    if self.channel is None or self.user is None or self.tracker.retired:
+                        return
+                    generation = self.reader_jump.generation
+                    await self.reader_jump.refresh(self.channel, self.user.id,
+                                                   self.tracker.revision, self.dashboard.monotonic())
+                    if generation == self.reader_jump.generation:
+                        break
+            except sqlite3.Error:
+                LOG.error('Reader cache write failed; pausing tracking. Check database access.')
+                await self.close()
+
+        async def background_updates(self):
+            # Controller-owned tasks serialize their own writes, not Gateway events.
+            if self.channel is None or self.tracker.retired:
+                return
+            await self.prepare_status()
+            if self.dashboard_task is None or self.dashboard_task.done():
+                self.dashboard_task = asyncio.create_task(self.refresh_dashboard(), name='status-publication')
+            if self.recovery_task is None or self.recovery_task.done():
+                self.recovery_task = asyncio.create_task(self.refresh_recovery(), name='history-recovery')
+
+        async def refresh_dashboard(self):
+            try:
+                await self.dashboard.refresh()
+            except sqlite3.Error:
+                LOG.error('Database update failed; pausing tracking. Check disk space and database access.')
+                await self.close()
+
+        async def refresh_recovery(self):
+            try:
+                if self.channel is not None and self.user is not None:
+                    await self.recovery.refresh(self.channel, self.user.id)
+            except sqlite3.Error:
+                LOG.error('History recovery write failed; pausing tracking. Check database access.')
+                await self.close()
+
+        async def stop_updates(self):
+            tasks = (self.reader_task, self.dashboard_task, self.recovery_task)
+            for task in tasks:
+                if task is not None and task is not asyncio.current_task():
+                    task.cancel()
+            for task in tasks:
+                if task is not None and task is not asyncio.current_task():
+                    with suppress(asyncio.CancelledError):
+                        await task
+            self.reader_task = self.dashboard_task = self.recovery_task = None
+
 
         def permission_error(self, interaction, *, moderator: bool = False, target=None, member=None) -> str | None:
             channel = self.channel
@@ -870,6 +883,17 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             except (discord.HTTPException, OSError, aiohttp.ClientError):
                 raise DeleteFailed() from None
 
+        async def edit_status(self, message_id: int, text: str) -> None:
+            if self.channel is None:
+                raise DeleteFailed('Channel is not ready.')
+            try:
+                await self.channel.get_partial_message(message_id).edit(
+                    content=text, allowed_mentions=discord.AllowedMentions.none(), view=self.reader_jump.view())
+            except discord.NotFound:
+                raise MissingMessage() from None
+            except (discord.HTTPException, OSError, aiohttp.ClientError):
+                raise DeleteFailed() from None
+
         async def send_status(self, text: str) -> int:
             channel = self.channel
             if channel is None:
@@ -954,14 +978,17 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             current = load_config(path)
             updated = replace(current, channel_id=channel.id)
             save_config(path, updated)
+            await self.stop_updates()
+            self.reader_jump.retired = True
             tracker = Tracker(store, channel.id, updated.cap, updated.timezone_name, delete=self.delete_message)
             settings = updated
             self.tracker = tracker
             self.recovery = RestartRecovery(tracker)
             self.reader_jump = ReaderJump(store.connection, tracker.tz,
-                                          lambda: self.tracker.now())
+                                          lambda: self.tracker.now(), monotonic=lambda: self.dashboard.monotonic())
             self.dashboard = Dashboard(store, tracker, self.send_status, self.delete_message,
-                                       prepare=self.prepare_status)
+                                       prepare=self.prepare_status, edit=self.edit_status,
+                                       signature=self.reader_jump.signature)
             self.channel = channel
             self.startup_error = None
             if self.channel_prompt is not None and self.channel_prompt is not asyncio.current_task():
@@ -1029,6 +1056,7 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                 channel = await self.checked_channel(settings.channel_id)
                 self.channel = channel
                 self.recovery.request()
+                self.reader_jump.request_reconcile()
                 self.startup_error = None
                 if self.channel_prompt is not None:
                     self.channel_prompt.cancel()
@@ -1074,7 +1102,12 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             if not message.author.bot and await self.handle_sync_message(message):
                 return
             try:
-                await self.tracker.process(message.id, message.author.id, message.author.display_name, message.created_at)
+                if self.user is not None and self.reader_jump.reader_id is not None and self.reader_jump.source_id is not None:
+                    self.reader_jump.ensure_scope(self.channel)
+                    self.reader_jump.observe(message, self.user.id)
+                changed = await self.tracker.process(message.id, message.author.id, message.author.display_name, message.created_at)
+                if changed:
+                    self.dashboard.note_activity()
             except sqlite3.Error:
                 LOG.error('Database write failed; stopping to avoid incorrect quota tracking. Check disk space and database access.')
                 self.startup_error = 'Database write failed.'
@@ -1087,26 +1120,27 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
 
         async def on_raw_reaction_add(self, payload):
             if payload.channel_id == settings.channel_id and payload.user_id == self.reader_jump.reader_id:
-                self.reader_jump.dirty = True
+                self.reader_jump.reaction(getattr(payload, 'message_id', None), True)
 
         async def on_raw_reaction_remove(self, payload):
-            await self.on_raw_reaction_add(payload)
+            if payload.channel_id == settings.channel_id and payload.user_id == self.reader_jump.reader_id:
+                self.reader_jump.reaction(getattr(payload, 'message_id', None), None)
 
         async def on_raw_reaction_clear(self, payload):
             if payload.channel_id == settings.channel_id:
-                self.reader_jump.dirty = True
+                self.reader_jump.reaction(getattr(payload, 'message_id', None), False)
 
         async def on_raw_reaction_clear_emoji(self, payload):
-            await self.on_raw_reaction_clear(payload)
+            if payload.channel_id == settings.channel_id:
+                self.reader_jump.reaction(getattr(payload, 'message_id', None), None)
 
         async def on_raw_bulk_message_delete(self, payload):
             if payload.channel_id == settings.channel_id:
                 await self.handle_removed(list(payload.message_ids))
 
         async def handle_removed(self, ids):
-            if self.reader_jump.url is not None and int(self.reader_jump.url.rsplit('/', 1)[-1]) in ids:
-                self.reader_jump.dirty = True
             try:
+                self.reader_jump.removed(ids)
                 self.dashboard.removed(ids)
                 await self.tracker.removed(ids)
             except sqlite3.Error:
@@ -1118,20 +1152,12 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
             await self.wait_until_ready()
             while not self.is_closed():
                 if self.channel is not None and self.is_ready():
-                    try:
-                        async with self.runtime_lock:
-                            if self.channel is not None:
-                                if self.user is not None:
-                                    await self.recovery.refresh(self.channel, self.user.id)
-                                await self.dashboard.refresh()
-                    except sqlite3.Error:
-                        LOG.error('Database update failed; stopping. Check disk space and database access.')
-                        self.startup_error = 'Database update failed.'
-                        await self.close()
-                        return
+                    await self.background_updates()
                 await asyncio.sleep(1)
 
         async def close(self):
+            await self.stop_updates()
+            self.reader_jump.retired = True
             if self.channel_prompt is not None and self.channel_prompt is not asyncio.current_task():
                 self.channel_prompt.cancel()
                 with suppress(asyncio.CancelledError):

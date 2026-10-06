@@ -186,7 +186,7 @@ class RestartRecoveryTests(unittest.IsolatedAsyncioTestCase):
         await self.recovery.refresh(self.channel, 999)
         self.assertEqual(self.tracker.rows(), [(7, 'User 7', 1, 1)])
 
-    async def test_events_wait_for_complete_snapshot_and_then_deduplicate(self):
+    async def test_live_events_progress_during_snapshot_and_deduplicate(self):
         offline = self.message(1)
         started, proceed = asyncio.Event(), asyncio.Event()
 
@@ -199,11 +199,71 @@ class RestartRecoveryTests(unittest.IsolatedAsyncioTestCase):
         recovery = asyncio.create_task(self.recovery.refresh(self.channel, 999))
         await started.wait()
         event = asyncio.create_task(self.record(offline))
-        await asyncio.sleep(0)
-        self.assertFalse(event.done())
-        proceed.set()
-        await asyncio.gather(recovery, event)
+        try:
+            await asyncio.sleep(0)
+            self.assertTrue(event.done(), 'Network history must not hold the accounting lock')
+        finally:
+            proceed.set()
+            await asyncio.gather(recovery, event)
         self.assertEqual(self.tracker.rows(), [(7, 'User 7', 1, 1)])
+
+    async def test_live_delete_during_snapshot_does_not_resurrect_unknown_post(self):
+        offline = self.message(1)
+        started, proceed = asyncio.Event(), asyncio.Event()
+        async def held_history(**kwargs):
+            started.set()
+            await proceed.wait()
+            yield offline
+        self.channel.history = held_history
+        task = asyncio.create_task(self.recovery.refresh(self.channel, 999))
+        await started.wait()
+        removal = asyncio.create_task(self.tracker.removed([offline.id]))
+        try:
+            await asyncio.sleep(0)
+            self.assertTrue(removal.done(), 'Raw deletion must not wait for history')
+        finally:
+            proceed.set()
+            await asyncio.gather(task, removal)
+        self.assertEqual(self.tracker.rows(), [])
+
+    async def test_live_reset_during_snapshot_discards_old_window(self):
+        offline = self.message(1)
+        started, proceed = asyncio.Event(), asyncio.Event()
+        async def held_history(**kwargs):
+            started.set()
+            await proceed.wait()
+            yield offline
+        self.channel.history = held_history
+        task = asyncio.create_task(self.recovery.refresh(self.channel, 999))
+        await started.wait()
+        reset = asyncio.create_task(self.tracker.reset())
+        try:
+            await asyncio.sleep(0)
+            self.assertTrue(reset.done(), 'Moderator reset must not wait for history')
+        finally:
+            proceed.set()
+            await asyncio.gather(task, reset)
+        self.assertEqual(self.tracker.rows(), [])
+        self.assertTrue(self.recovery.pending)
+
+    async def test_live_new_post_absent_from_snapshot_remains_retained(self):
+        offline, live = self.message(1), self.message(2)
+        started, proceed = asyncio.Event(), asyncio.Event()
+        async def held_history(**kwargs):
+            started.set()
+            await proceed.wait()
+            yield offline
+        self.channel.history = held_history
+        task = asyncio.create_task(self.recovery.refresh(self.channel, 999))
+        await started.wait()
+        event = asyncio.create_task(self.record(live))
+        try:
+            await asyncio.sleep(0)
+            self.assertTrue(event.done(), 'Incoming post must progress during history')
+        finally:
+            proceed.set()
+            await asyncio.gather(task, event)
+        self.assertEqual(self.tracker.rows(), [(7, 'User 7', 2, 2)])
 
     async def test_midnight_during_scan_discards_stale_snapshot_then_recovers_new_day(self):
         previous = self.message(1)
@@ -224,7 +284,7 @@ class RestartRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RestartIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_standalone_refresh_recovers_before_publishing_dashboard(self):
+    async def test_standalone_refresh_schedules_counts_before_background_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
             store = bot.Store(Path(directory) / 'data.sqlite3')
             self.addCleanup(store.close)
@@ -240,7 +300,7 @@ class RestartIntegrationTests(unittest.IsolatedAsyncioTestCase):
             async def history(**kwargs):
                 yield message
 
-            client.channel = SimpleNamespace(id=123, history=history)
+            client.channel = SimpleNamespace(id=123, guild=SimpleNamespace(id=456), history=history)
             client.wait_until_ready = AsyncMock()
             client.is_ready = Mock(return_value=True)
             client.is_closed = Mock(side_effect=[False, True])
@@ -252,9 +312,12 @@ class RestartIntegrationTests(unittest.IsolatedAsyncioTestCase):
             client.dashboard.refresh = publish
             with patch('bot.asyncio.sleep', new=AsyncMock()):
                 await client.refresh_loop()
-            self.assertEqual(seen, [[(7, 'Alice', 1, 1)]])
+            await client.dashboard_task
+            await client.recovery_task
+            self.assertEqual(seen, [[]], 'Saved counts publish while history reconciles')
+            self.assertEqual(client.tracker.rows(), [(7, 'Alice', 1, 1)])
 
-    async def test_guild_refresh_recovers_only_its_monitored_channel_before_summary(self):
+    async def test_guild_refresh_schedules_only_its_monitored_channel_recovery(self):
         from guild_bot import create_guild_client
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config.json'
@@ -290,7 +353,11 @@ class RestartIntegrationTests(unittest.IsolatedAsyncioTestCase):
             gateway.controllers[456].dashboard.refresh = publish
             with patch('guild_bot.asyncio.sleep', new=AsyncMock()):
                 await gateway.refresh_loop()
-            self.assertEqual(seen, [[(7, 'Alice', 1, 1)]])
+            controller = gateway.controllers[456]
+            await controller.dashboard_task
+            await controller.recovery_task
+            self.assertEqual(seen, [[]], 'Saved counts publish independently of history')
+            self.assertEqual(controller.tracker.rows(), [(7, 'Alice', 1, 1)])
 
 
 class RepairedChannelRestartTests(unittest.IsolatedAsyncioTestCase):

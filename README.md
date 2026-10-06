@@ -29,7 +29,7 @@ The scoreboard shows only users with an explicit personal cap. Each row shows th
 
 SaucyBot replies leave the original human post and its X/Twitter link in place. Original posts and SaucyBot posts still follow their authors’ caps: an over-cap send can randomly delete a post from that same author. Caps are per account, so the original poster and SaucyBot have separate allowances.
 
-The bot replaces its status batch after activity, at most once every five seconds. This returns the scoreboard near the bottom; Discord cannot permanently anchor a message there. Large scoreboards use multiple messages. At local midnight, tracking and the displayed day reset without deleting yesterday's human messages.
+The bot edits existing status messages at most once per second when counts or the jump change, and skips identical updates. After new posts, it relocates the summary near the bottom at most once every five seconds; reactions alone edit it in place. Discord cannot permanently anchor a message there. Large scoreboards use multiple messages. At local midnight, tracking and the displayed day reset without deleting yesterday's human messages.
 
 ### Jump directly to the oldest unreacted tweet
 
@@ -37,7 +37,11 @@ After restarting the updated bot, run `/cap_source user:@SaucyBot` and `/cap_rea
 
 Any reaction by that reader, including a super reaction, marks the post seen for this feature. Other people's reactions do not. Removing the reader's last reaction makes the post eligible again. The search includes only the selected source's posts (human or bot), skips the reader's own posts, this bot, webhooks, system messages and setup/sync requests, and uses the configured timezone (America/Toronto by default). It reads Discord history independently of quota resets and messages observed while online; Message Content intent stays off.
 
-The link refreshes with activity and reaction changes, normally within five seconds, and rechecks every minute for missed events. **All caught up today** disables the button when nothing is left. A failed or timed-out lookup disables it temporarily and retries; it does not claim the reader is caught up. Each scan attempt has a two-minute time budget to accommodate reaction rate-limit waits for a 50-post batch, including normal and super reactions. discord.py follows Discord’s rate-limit responses; actual limits vary. Long scans can delay this server’s scoreboard and message processing while the scan holds its existing coordination lock. Interrupted attempts retain completed reaction checks so retries can advance through rate-limited history; reaction events, selection changes and midnight clear that progress, and a completed scan clears it for the next periodic recheck. Warnings include the exception type, HTTP status when available, and completed-check count. A single request that repeatedly exceeds the budget can still prevent progress. A reaction/deletion can briefly race a displayed link. Reader selection survives restarts and counter resets; current history and reactions rebuild the destination.
+The link updates from an in-memory cache and live events, normally on the next one-second worker tick when Discord is responsive. Confirmed reactions survive successful refreshes. Reader additions update cached posts directly without reaction-membership requests; removing a reaction or clearing one emoji rechecks only that post so other normal or super reactions still count. Deletions and new source posts update the cached order. Counts publish independently of reader scans, and servers have separate background tasks.
+
+A versioned, ID-only reader cache lives in the existing private SQLite database and is scoped to channel, local day, reader and source. Cached membership is provisional after a restart or fresh Gateway session: the jump stays temporarily unavailable while current history/reactions are reconciled, and does not falsely claim caught up. Background reconciliation starts every minute to recover missed events; Discord pacing can extend completion. Completed reaction checks survive timeouts so retries advance. Each attempt keeps its two-minute budget, and discord.py honors Discord's rate-limit waits. Cold scans and reconciliation still require API requests; caching cannot eliminate those waits. Generation and per-message versions protect results against events arriving during a scan. A displayed link can still briefly race a reaction or deletion.
+
+On startup, saved counts are available while history recovery runs separately; a complete snapshot then adds surviving offline posts and repairs retained counts. Live sends, deletions and moderator resets keep progressing during that read. Reader/source selection and the cache survive quota resets; selection, channel and midnight changes rebuild the eligible scope. Warnings include exception type, HTTP status when available, and completed-check count. A single request repeatedly exceeding its budget remains a limitation.
 
 ## Setup
 
@@ -104,7 +108,7 @@ If registration fails, the reply includes a re-authorization link with `applicat
 
 ## Discord slash commands
 
-Use cap/status/reset commands in **this server’s configured text channel**. `/cap_channel` is also available elsewhere in the same server. Select members from Discord's native picker; do not type a user ID. All replies are private to the requester, and the public scoreboard refreshes through its normal five-second throttle.
+Use cap/status/reset commands in **this server’s configured text channel**. `/cap_channel` is also available elsewhere in the same server. Select members from Discord's native picker; do not type a user ID. All replies are private to the requester, and the public scoreboard updates through its normal one-second edit throttle and five-second sticky relocation throttle.
 
 | Command | Who can use it | Effect |
 | --- | --- | --- |
@@ -138,6 +142,8 @@ Run these commands from the project directory:
 .venv/bin/python bot.py --help
 .venv/bin/python -m unittest discover -s tests -v
 ```
+
+For a reproducible offline request-count comparison, run `.venv/bin/python scripts/benchmark_updates.py`. It uses synthetic posts and reactions, requires no token, and never calls Discord. `--baseline REV` chooses a Git revision (default `HEAD`); `--request-wait-ms N` sets the simulated membership-request delay (default 4 ms, from 0 through 100). It verifies the expected target and reports history/fetch/membership calls and elapsed times for cold, warm and reader-add updates. Timing is simulated evidence, not live Discord latency.
 
 - `--setup` creates or edits configuration; blank input keeps existing values. It preserves message data.
 - `--cap N` selects the cap prompt default during setup (press Enter to accept); for example `.venv/bin/python bot.py --setup --cap 3` prepares a short live smoke test.

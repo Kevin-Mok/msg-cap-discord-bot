@@ -167,6 +167,7 @@ class GuildTests(unittest.IsolatedAsyncioTestCase):
         from test_reader_jump import Reaction
         clock = [0.0]
         messages = {}
+        views = {}
         async def history(cid, **kwargs):
             for message in messages[cid]:
                 yield message
@@ -187,18 +188,26 @@ class GuildTests(unittest.IsolatedAsyncioTestCase):
                 messages[cid].append(message)
             channel.history = lambda _cid=cid, **kwargs: history(_cid, **kwargs)
             channel.fetch_message = AsyncMock(side_effect=lambda mid, _cid=cid: next(m for m in messages[_cid] if m.id == mid))
-            channel.send = AsyncMock(return_value=SimpleNamespace(id=cid * 100))
+            async def send(text, _cid=cid, **kwargs):
+                views[_cid] = kwargs.get('view')
+                return SimpleNamespace(id=_cid * 100)
+            async def edit(_cid=cid, **kwargs):
+                views[_cid] = kwargs.get('view')
+            channel.send = send
+            channel.get_partial_message = lambda mid, _edit=edit: SimpleNamespace(edit=_edit)
+            await controller.prepare_status()
+            await controller.reader_task
             await controller.dashboard.refresh()
         self.assertTrue(self.client.intents.guild_reactions)
         self.assertFalse(self.client.intents.message_content)
         messages[123][0].reactions = [Reaction(normal=[8])]
         clock[0] += 5
-        await self.client.on_raw_reaction_add(SimpleNamespace(channel_id=123, user_id=8))
+        await self.client.on_raw_reaction_add(SimpleNamespace(channel_id=123, user_id=8, message_id=messages[123][0].id))
         for controller in self.client.controllers.values():
             await controller.dashboard.refresh()
-        self.assertEqual(self.channels[123].send.call_args.kwargs['view'].children[0].url,
+        self.assertEqual(views[123].children[0].url,
                          messages[123][1].jump_url)
-        self.assertEqual(self.channels[456].send.call_args.kwargs['view'].children[0].url,
+        self.assertEqual(views[456].children[0].url,
                          messages[456][0].jump_url)
 
     async def test_failed_save_keeps_current_controller_active(self):

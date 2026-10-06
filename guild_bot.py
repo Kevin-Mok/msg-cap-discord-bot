@@ -123,6 +123,7 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
                             legacy.connection.backup(store.connection)
                     async with AsyncExitStack() as stack:
                         if current is not None:
+                            await current.stop_updates()
                             await stack.enter_async_context(current.tracker.lock)
                         store.connection.backup(snapshot)
                         snapshot_ready = True
@@ -131,6 +132,7 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
                         save_config(path, updated)
                         if current is not None:
                             current.tracker.retired = True
+                            current.reader_jump.retired = True
                             current.channel = None
                 except (OSError, ValueError, sqlite3.Error):
                     if store is not None:
@@ -150,6 +152,8 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
                 async def sync_commands(guild_id: int):
                     return await self.sync_guild(guild_id)
                 async def close_controller():
+                    await controller.stop_updates()
+                    controller.reader_jump.retired = True
                     controller.channel = None
                     controller.tracker.retired = True
                     LOG.error('Tracking paused for guild %s; repair it with /cap_channel.', guild_id)
@@ -194,6 +198,7 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
                     controller = self.controllers.get(guild.id)
                     if controller is not None and controller.channel is not None:
                         controller.recovery.request()
+                        controller.reader_jump.request_reconcile()
             migrated = legacy.connection.execute("SELECT value FROM meta WHERE key='guild_migrated'").fetchone()
             if migrated is None:
                 try:
@@ -213,6 +218,8 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
             async with self.lock_for(guild.id):
                 controller = self.controllers.pop(guild.id, None)
                 if controller is not None:
+                    await controller.stop_updates()
+                    controller.reader_jump.retired = True
                     async with controller.tracker.lock:
                         controller.tracker.retired = True
                         controller.channel = None
@@ -268,8 +275,10 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
 
         async def route_reaction(self, name, payload):
             for gid, controller in list(self.controllers.items()):
+                if controller.channel is None or controller.channel.id != payload.channel_id:
+                    continue
                 async with self.lock_for(gid):
-                    if controller.channel is not None and controller.channel.id == payload.channel_id:
+                    if self.controllers.get(gid) is controller and controller.channel is not None and controller.channel.id == payload.channel_id:
                         await getattr(controller, name)(payload)
 
         async def on_raw_reaction_add(self, payload):
@@ -286,8 +295,10 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
 
         async def removed(self, channel_id, ids):
             for gid, controller in list(self.controllers.items()):
+                if controller.channel is None or controller.channel.id != channel_id:
+                    continue
                 async with self.lock_for(gid):
-                    if controller.channel is not None and controller.channel.id == channel_id:
+                    if self.controllers.get(gid) is controller and controller.channel is not None and controller.channel.id == channel_id:
                         await controller.handle_removed(ids)
 
         async def setup_hook(self):
@@ -296,17 +307,9 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
         async def refresh_loop(self):
             await self.wait_until_ready()
             while not self.is_closed():
-                for gid in list(self.controllers):
-                    async with self.lock_for(gid):
-                        controller = self.controllers.get(gid)
-                        if controller is None or controller.channel is None:
-                            continue
-                        try:
-                            if self.user is not None:
-                                await controller.recovery.refresh(controller.channel, self.user.id)
-                            await controller.dashboard.refresh()
-                        except sqlite3.Error:
-                            await controller.close()
+                for controller in list(self.controllers.values()):
+                    if controller.channel is not None and not controller.tracker.retired:
+                        await controller.background_updates()
                 await asyncio.sleep(1)
 
         async def close(self):
@@ -315,6 +318,9 @@ def create_guild_client(defaults: Settings, legacy: Store, *, config_path: Path)
                     task.cancel()
                     with suppress(asyncio.CancelledError):
                         await task
+            for controller in self.controllers.values():
+                await controller.stop_updates()
+                controller.reader_jump.retired = True
             await super().close()
             for store in self.stores.values():
                 store.close()

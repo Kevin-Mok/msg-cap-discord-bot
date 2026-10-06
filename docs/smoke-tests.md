@@ -48,7 +48,7 @@ Use two human accounts and SaucyBot: one human posting account and one reader. S
   Expected: A moderator receives private confirmation. The jump searches only SaucyBot posts; human messages (including your own) and other bots are skipped.
 - Action: Generate three SaucyBot posts today with older human messages still present; react to the oldest as the selected reader, then wait for the summary refresh and tap Jump to unreacted.
   Expected: Discord opens the second message directly, with no intermediate bot reply. Someone else's reaction does not skip a message; any normal or super reaction by the reader does.
-- Action: Remove the reader's last reaction from the first message, wait at least five seconds, and tap the summary button again.
+- Action: Remove the reader's last reaction from the first message, wait for the next summary edit, and tap the summary button again.
   Expected: The first message is the destination again. Deleting that target advances to the next eligible surviving message. A quota reset does not hide older posts from this jump.
 - Action: React as the reader to every eligible message from today.
   Expected: The summary shows a disabled All caught up today button. Yesterday's posts, the reader's own posts, all authors except the selected source, webhooks and system messages are not jump targets.
@@ -57,9 +57,17 @@ Use two human accounts and SaucyBot: one human posting account and one reader. S
 - Action: Repeat restart after /cap_reset, and run the same checks in a second configured server.
   Expected: Recovery respects the since-reset window; previous posts are not counted again. Each server retains its own reader, source and daily counts. The jump still considers all eligible posts from today, including those before a counter reset.
 - Action: Temporarily deny Read Message History, trigger a reader reaction change, then restore permission.
-  Expected: The jump becomes unavailable rather than falsely caught up; saved counts remain intact on a failed recovery. Lookups recover after permission is restored (reader retry on the next refresh; startup recovery retry within 30 seconds).
+  Expected: A live reader addition can still use the warm cache without history permission. On the next periodic reconciliation (or after restarting), the jump becomes unavailable rather than falsely caught up; saved counts remain intact on failed recovery. Lookups recover after permission is restored (reader retry on the next refresh; startup recovery retry within 30 seconds).
 - Action: In a test channel, create 49 reacted source posts followed by one unreacted source post; leave reactions unchanged while the summary scans.
-  Expected: The scan tolerates rate-limit waits up to its two-minute budget and links to the 50th post. If that budget is exceeded, timeout warnings identify TimeoutError and an increasing completed-check count across retries; the jump eventually reaches the unreacted post when individual requests finish within the budget. This server’s scoreboard and message processing may be delayed during a long scan. Removing a reader reaction while recovery is in progress makes that older post eligible again. After midnight yesterday's unreacted posts leave the today-only search.
+  Expected: The scan tolerates rate-limit waits up to its two-minute budget and links to the 50th post. If that budget is exceeded, timeout warnings identify TimeoutError and an increasing completed-check count across retries; the jump eventually reaches the unreacted post when individual requests finish within the budget. Counts and new messages continue updating during the scan, and another server remains responsive; cold history and reaction checks run independently. Removing a reader reaction while recovery is in progress makes that older post eligible again. After midnight yesterday's unreacted posts leave the today-only search.
+- Action: After the jump has hydrated, react to its current target as the selected reader; send another source post and inspect the summary during ongoing activity.
+  Expected: The jump advances from cached order on the next healthy worker tick (normally about one second), counts update by edits, and the summary moves down at most once every five seconds. Reaction-only updates keep the same summary message. Discord rate-limit waits can extend timing.
+- Action: Put both a normal and super reaction (or two emoji) on the same eligible post, then remove just one as the reader.
+  Expected: The post stays seen while any reader reaction remains. Removing the final one makes it eligible again; other readers' reactions do not mark it seen.
+- Action: Stop the bot, remove the selected reader's reaction from an older post and add another person's reaction so the total stays unchanged; restart.
+  Expected: Saved counts appear while recovery runs. The jump stays temporarily unavailable until reconciled and then returns to the older post. Aggregate reaction counts do not substitute for reader membership.
+- Action: .venv/bin/python scripts/benchmark_updates.py
+  Expected: The synthetic fixture reaches the independently expected targets. The working tree makes zero history, fetch and membership reads for warm refresh and reader-add; the baseline comparison names its Git revision. No token, live API or sudo is required. Use --baseline REV for an older implementation after committing.
 - Action: /cap_source without a user, then re-select SaucyBot and restart.
   Expected: Clearing the source hides the button while keeping the reader. Re-selecting and restarting restores the SaucyBot-only jump.
 - Action: /cap_reader
@@ -208,14 +216,14 @@ Use two human accounts and SaucyBot: one human posting account and one reader. S
 ## Channel-access recovery
 
 - Action: Start with a valid token but a text-channel ID the bot cannot access.
-  Expected: Startup prints an invite/re-authorization URL plus channel-ID and permission-override guidance, then exits. Optional voice warnings are unrelated to channel access.
+  Expected: Startup prints an invite/re-authorization URL plus channel-ID and permission-override guidance, keeps the Gateway online for /cap_channel or mention-based setup. Optional voice warnings are unrelated to channel access.
 - Action: Use the invite link to authorize the correct bot in the correct server, allow the four channel permissions, and start again.
   Expected: Channel resolution succeeds when the ID and permissions are correct; the Ready message and slash-registration result appear.
 
 ## Multiple servers and channel setup
 
 - Action: Invite the same bot to servers A and B. In each server, run `/cap_channel channel:#test` with Manage Server permission. If it is absent, send `@Twitter Cap channel here` with the real bot mention.
-  Expected: Each server gets its own saved channel, scoreboard, and eight commands. Setup in B does not redirect A.
+  Expected: Each server gets its own saved channel, scoreboard, and nine commands. Setup in B does not redirect A.
 - Action: As the same human member in both servers, set your personal cap to 1 in A and 3 in B, reset your counters in both, then send two messages in each.
   Expected: A shows 2 sent / 1 retained; B shows 2 sent / 2 retained. No cross-server deletion occurs.
 - Action: Run `/cap_default limit:8` and `/cap_reset` (confirm) in A; inspect `/cap_status` in B.

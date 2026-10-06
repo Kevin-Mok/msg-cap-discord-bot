@@ -24,3 +24,8 @@
 
 ## 2026-10-04 — Bounded scans must retain progress
 - A timeout around a multi-request Discord scan can starve forever if retries restart from the same reacted posts. Retain completed checks across incomplete attempts, invalidate on reader/source/day/reaction changes, and clear on success for periodic reconciliation. Log exception type and progress so timeout and HTTP failures are distinguishable.
+
+## 2026-10-06 — Event-driven cache and background publication
+- Preserve confirmed reader reactions across successful warm updates; invalidate only affected posts. Normal/super/multiple emoji removals require a membership check, while reader additions can apply directly. Persisted state is provisional after offline gaps; use generation and per-message versions to reject stale network results.
+- Keep reaction/history reads and status publication outside Gateway/accounting locks. Merge complete recovery snapshots atomically with deletion tombstones, live-post protection and reset-window checks. Controller tasks must be cancelled before scope replacement or shared SQLite closure.
+- Separate one-second summary edits from five-second post-driven sticky relocation and suppress identical payloads. Benchmark read counts with synthetic data; offline evidence never proves live activation.

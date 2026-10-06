@@ -43,6 +43,7 @@ class ReaderJumpTests(unittest.IsolatedAsyncioTestCase):
         self.channel.history = self.history
         self.channel.fetch_message = self.fetch
         self.channel.send = self.send
+        self.channel.get_partial_message = lambda mid: SimpleNamespace(edit=self.edit)
 
     async def history(self, *, after, before, oldest_first, limit):
         self.assertTrue(oldest_first)
@@ -57,6 +58,9 @@ class ReaderJumpTests(unittest.IsolatedAsyncioTestCase):
     async def send(self, text, **kwargs):
         self.sent.append((text, kwargs))
         return SimpleNamespace(id=9000 + len(self.sent))
+
+    async def edit(self, *, content, **kwargs):
+        self.sent.append((content, kwargs))
 
     def message(self, hour, *, author=8, reactions=(), bot_author=False, webhook=None,
                 kind=discord.MessageType.default, day=3, millisecond=0, content=''):
@@ -77,6 +81,12 @@ class ReaderJumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(interaction.messages[-1]['ephemeral'])
 
     async def button(self):
+        # Production publication remains independent; wait for hydration only in
+        # assertions about the eventual destination, then advance the edit clock.
+        await self.client.prepare_status()
+        if self.client.reader_task is not None:
+            await self.client.reader_task
+        self.clock = max(self.clock, self.client.dashboard.last_attempt + 1)
         await self.client.dashboard.refresh()
         return self.sent[-1][1]['view'].children[0]
 
