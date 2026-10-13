@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Callable
 import aiohttp
 import discord
 
+from tweet_pairs import reply_source
+
 if TYPE_CHECKING:
     from bot import Tracker
 
@@ -51,6 +53,7 @@ class RestartRecovery:
             after = discord.Object(discord.utils.time_snowflake(midnight) - 1)
             before = discord.Object(discord.utils.time_snowflake(tracker.now(), high=True) + 1)
         messages: list[tuple[int, int, str, datetime]] = []
+        reply_links: list[tuple[int, int]] = []
         try:
             # Network waits never hold the accounting lock. Merge only a complete
             # snapshot and preserve mutations received while the history was read.
@@ -63,6 +66,9 @@ class RestartRecovery:
                     if (len(words) >= 2 and words[0] in (f'<@{bot_id}>', f'<@!{bot_id}>')
                             and (words[1] == 'channel' or words[1:] in (['sync'], ['slash', 'sync']))):
                         continue
+                    source = reply_source(message, tracker.channel_id)
+                    if source is not None:
+                        reply_links.append((message.id, source))
                     messages.append((message.id, message.author.id, message.author.display_name, message.created_at))
         except (discord.HTTPException, OSError, aiohttp.ClientError):
             LOG.warning('Today’s history recovery failed in channel %s; saved counters kept; retrying in 30 seconds.',
@@ -75,7 +81,8 @@ class RestartRecovery:
             if tracker.day != day or tracker.window_token(None) != window or self.generation != generation:
                 self.next_attempt = float('-inf')
                 return False
-            tracker._reconcile_history(messages, before.id, protected_ids=tracker.seen - initial_seen)
+            tracker._reconcile_history(messages, before.id, protected_ids=tracker.seen - initial_seen,
+                                       reply_links=reply_links)
             self.pending = False
             LOG.info('Recovered today’s surviving messages in channel %s; saved sent counts preserved.', tracker.channel_id)
             return True

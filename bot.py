@@ -21,6 +21,8 @@ from typing import Awaitable, Callable, Sequence, Self, cast
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from tweet_pairs import TweetPairs, reply_source
+
 ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger('messagecap')
 Delete = Callable[[int], Awaitable[None]]
@@ -222,6 +224,7 @@ class Store:
                 OR typeof(user_id) != 'integer' OR channel_id <= 0 OR user_id <= 0 LIMIT 1''').fetchone()
             if invalid:
                 raise ValueError('Invalid persisted counters or message IDs; restore a database backup.')
+            self.pairs = TweetPairs(self.connection)
             self.connection.execute('PRAGMA user_version=3')
             self.connection.commit()
         except (sqlite3.Error, ValueError):
@@ -239,6 +242,7 @@ class Store:
         with self.connection:
             self.connection.execute('DELETE FROM users')
             self.connection.execute('DELETE FROM events')
+            self.connection.execute('DELETE FROM tweet_pairs')
             self.connection.execute('DELETE FROM resets')
             self.connection.execute("INSERT OR REPLACE INTO meta VALUES ('scope', ?)", (key,))
         return True
@@ -337,7 +341,8 @@ class Tracker:
             for message_id in message_ids:
                 self._removed(message_id)
 
-    async def process(self, message_id: int, user_id: int, name: str, created_at: datetime) -> bool:
+    async def process(self, message_id: int, user_id: int, name: str, created_at: datetime,
+                      *, reply_to: int | None = None) -> bool:
         async with self.lock:
             self._rollover()
             if created_at.astimezone(self.tz).date().isoformat() != self.day or message_id in self.seen:
@@ -352,11 +357,18 @@ class Tracker:
             self.users[user_id] = (name, sent)
             self.retained[user_id][message_id] = None
             self.owners[message_id] = user_id
+            with self.store.connection:
+                self.store.pairs.remember(message_id, reply_to, self.owners)
             self.revision += 1
             cap = self.cap_for(user_id)
             if cap is not None and sent > cap and len(self.retained[user_id]) > 1:
                 while self.retained[user_id]:
-                    candidate = self.choose(list(self.retained[user_id]))
+                    pairs = self.store.pairs.candidates(user_id, self.owners)
+                    unpaired = [mid for mid in self.retained[user_id] if mid not in pairs]
+                    candidate = self.choose(unpaired or list(pairs))
+                    partner = pairs.get(candidate)
+                    if partner is not None and self.cap_for(self.owners[partner]) is None:
+                        partner = None
                     try:
                         await self.delete(candidate)
                     except MissingMessage:
@@ -367,11 +379,22 @@ class Tracker:
                                   candidate, self.channel_id)
                         break
                     self._removed(candidate)
+                    if partner is not None:
+                        try:
+                            await self.delete(partner)
+                        except MissingMessage:
+                            self._removed(partner)
+                        except DeleteFailed:
+                            LOG.error('Could not delete paired message %s in channel %s; check Manage Messages and connectivity.',
+                                      partner, self.channel_id)
+                        else:
+                            self._removed(partner)
                     break
             return True
 
     def _reconcile_history(self, messages: Sequence[tuple[int, int, str, datetime]], before_id: int,
-                           *, protected_ids: set[int] | None = None) -> None:
+                           *, protected_ids: set[int] | None = None,
+                           reply_links: Sequence[tuple[int, int]] = ()) -> None:
         """Atomically merge a complete history snapshot while the caller holds lock."""
         surviving = {}
         for mid, uid, name, created_at in messages:
@@ -388,6 +411,10 @@ class Tracker:
                 self.store.connection.execute('INSERT INTO events VALUES (?, ?, 1, 1)', (mid, uid))
                 self.store.connection.execute('''INSERT INTO users VALUES (?, ?, 1)
                     ON CONFLICT(id) DO UPDATE SET name=excluded.name, sent=sent+1''', (uid, name))
+            pair_owners = {mid: uid for mid, uid in self.owners.items() if mid not in removed}
+            pair_owners.update({mid: uid for mid, (uid, _) in added.items()})
+            for reply, source in reply_links:
+                self.store.pairs.remember(reply, source, pair_owners)
             self.store.connection.executemany('UPDATE events SET retained=0 WHERE id=?',
                                              ((mid,) for mid in removed))
         # Mutate memory only after the full transaction commits successfully.
@@ -1116,7 +1143,8 @@ def create_client(settings: Settings, store: Store, *, config_path: Path | None 
                 if self.user is not None and self.reader_jump.reader_id is not None and self.reader_jump.source_id is not None:
                     self.reader_jump.ensure_scope(self.channel)
                     self.reader_jump.observe(message, self.user.id)
-                changed = await self.tracker.process(message.id, message.author.id, message.author.display_name, message.created_at)
+                changed = await self.tracker.process(message.id, message.author.id, message.author.display_name, message.created_at,
+                                                     reply_to=reply_source(message, settings.channel_id))
                 if changed:
                     self.dashboard.note_activity()
             except sqlite3.Error:

@@ -249,3 +249,18 @@ Check the shared display while verifying that the two accounts still have indepe
   Expected: The row first uses Pistol's cap and still takes both accounts' sent and retained maxima; after both are cleared the shared row is omitted. Restore both accounts' prior caps.
 - Action: With both caps at 50, retain 48 Pistol posts and 44 SaucyBot posts. Delete five Pistol posts, then delete all 44 SaucyBot posts.
   Expected: The shared row shows 48 retained initially, then 44, then 43; sent stays 48 throughout. A retained maximum can come from a different account than the sent maximum. Restore the test server's previous settings afterward.
+
+## Preserve Pistol/Saucy tweet pairs
+
+Use a private channel with the actual Pistol and SaucyBot accounts. Record existing caps and restore them afterward. Restart the bot with the updated code before these checks.
+
+- Action: Set both personal caps to 3, reset both accounts, and generate two Pistol originals with matching Saucy replies. Post two more Pistol originals while Saucy is unavailable.
+  Expected: Cap cleanup deletes an unmatched Pistol original and preserves both complete pairs. Selection is random within the unmatched pool. When the only unmatched original is the newest post, that newest original is eligible for deletion before Saucy responds.
+- Action: With both originals retained, set Saucy's cap to 2 and generate a further Saucy reply to one of those originals.
+  Expected: If every Saucy message has a retained Pistol source, one selected Saucy message and its exact Pistol source disappear together. Sent counters remain unchanged by deletion; retained counters decrease for both accounts. An unmatched Saucy message takes priority if present.
+- Action: Repeat after restarting the bot; also restart after creating a complete pair while the cap bot was offline.
+  Expected: Persisted/history-recovered reply links support the same cleanup priority. Recovery itself never deletes posts.
+- Action: Clear Pistol's personal cap with `/cap_clear user:@Pistol`, then trigger Saucy cap cleanup with only matching replies present. Repeat after resetting only Pistol instead of exempting it.
+  Expected: Exempt Pistol originals and originals outside Pistol's reset window remain untouched. Saucy cap cleanup still works for Saucy. Restore prior cap settings afterward.
+- Action: Run the three isolated preview scenarios with `scripts/preview_pair_cleanup.py --scenario unmatched`, `--scenario paired`, and `--scenario exempt` using the project virtualenv Python.
+  Expected: They report deleted IDs `[3]`, `[10, 1]`, and `[10]`, respectively. No Discord connection or live database modification occurs. Add `--plain` for ASCII output.
