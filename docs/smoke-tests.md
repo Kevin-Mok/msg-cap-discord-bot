@@ -234,3 +234,18 @@ Use two human accounts and SaucyBot: one human posting account and one reader. S
   Expected: A rebuilds today's counts from surviving messages in its newly saved channel; B keeps its channel and counts. Old A messages stay untouched. Old reset confirmations cannot mutate the new scope. A's reader selection persists, with its jump now searching the new channel.
 - Action: Upgrade a stopped single-server installation with a backup, start the new bot, and inspect its original server’s `/cap_status` before sending more messages.
   Expected: Existing daily counts and overrides import once into the owning server. Other servers start independently; restarting does not re-import stale legacy counts.
+
+## Maximum Pistol/Saucy summary
+
+Check the shared display while verifying that the two accounts still have independent caps. Use a test server and restore previous caps afterward.
+
+- Action: Run the offline preview with Pistol 5/Saucy 3, Pistol 3/Saucy 5, and Pistol 0/Saucy 1 using scripts/preview_summary.py.
+  Expected: Each run prints one summary row: respectively 5 sent/5 retained, 5 sent/5 retained, and 1 sent/1 retained, with cap 50. No token, Discord connection, sudo, or saved-state change is needed.
+- Action: Restart the updated deployment; set personal caps for Pistol (142822767497052161) and SaucyBot (647368715742216193). Send more Pistol posts than SaucyBot replies, then let SaucyBot catch up and exceed Pistol's count.
+  Expected: One row shows max(Pistol sent, SaucyBot sent), rather than two rows or their sum. Retained shows max(Pistol retained, SaucyBot retained); cap describes SaucyBot while SaucyBot has a personal cap; unrelated capped accounts keep their own rows. /cap_status still reports independent per-account counters.
+- Action: In the test server, use caps 2 for Pistol and 3 for SaucyBot; send 5 posts from each account, inspect /cap_status for each, then reset Pistol and finally SaucyBot.
+  Expected: The shared row shows 5 sent, 3 retained, cap 3. Each account independently retains at most its cap through ordinary quota deletion. Resetting Pistol leaves shared sent at 5 and marks since reset; resetting SaucyBot too makes it 0. Reset leaves surviving messages in place.
+- Action: Clear SaucyBot's personal cap while Pistol still has one, then clear Pistol's too.
+  Expected: The row first uses Pistol's cap and still takes both accounts' sent and retained maxima; after both are cleared the shared row is omitted. Restore both accounts' prior caps.
+- Action: With both caps at 50, retain 48 Pistol posts and 44 SaucyBot posts. Delete five Pistol posts, then delete all 44 SaucyBot posts.
+  Expected: The shared row shows 48 retained initially, then 44, then 43; sent stays 48 throughout. A retained maximum can come from a different account than the sent maximum. Restore the test server's previous settings afterward.

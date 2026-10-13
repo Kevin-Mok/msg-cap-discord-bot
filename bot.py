@@ -481,10 +481,21 @@ class Tracker:
 
 def render_dashboard(tracker: Tracker) -> list[str]:
     header = '📊 Daily tweet summary\n'
+    # Display one maximum for Pistol/Saucy; their accounting stays independent.
+    pair = (142822767497052161, 647368715742216193)
+    rows = tracker.rows()
+    summary_uid = next((uid for uid in reversed(pair) if uid in tracker.overrides), None)
+    pair_reset = any(tracker.reset_at(uid) for uid in pair)
+    if summary_uid is not None and any(uid in tracker.users for uid in pair):
+        rows = [row for row in rows if row[0] not in pair]
+        sent = max(tracker.users.get(uid, ('', 0))[1] for uid in pair)
+        retained = max(len(tracker.retained.get(uid, {})) for uid in pair)
+        rows.append((summary_uid, '', sent, retained))
+        rows.sort()
     lines = [f'🐦 {sent} {"tweet" if sent == 1 else "tweets"} sent · 📥 {retained} retained · 🎯 cap '
              f'{tracker.overrides[uid]}'
-             + (' · since reset' if tracker.reset_at(uid) else '') + '\n'
-             for uid, _name, sent, retained in tracker.rows() if uid in tracker.overrides]
+             + (' · since reset' if tracker.reset_at(uid) or (uid == summary_uid and pair_reset) else '') + '\n'
+             for uid, _name, sent, retained in rows if uid in tracker.overrides]
     if not lines:
         lines = ['No tweets from users with personal caps today.\n']
     chunks = []

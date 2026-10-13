@@ -29,3 +29,6 @@
 - Preserve confirmed reader reactions across successful warm updates; invalidate only affected posts. Normal/super/multiple emoji removals require a membership check, while reader additions can apply directly. Persisted state is provisional after offline gaps; use generation and per-message versions to reject stale network results.
 - Keep reaction/history reads and status publication outside Gateway/accounting locks. Merge complete recovery snapshots atomically with deletion tombstones, live-post protection and reset-window checks. Controller tasks must be cancelled before scope replacement or shared SQLite closure.
 - Separate one-second summary edits from five-second post-driven sticky relocation and suppress identical payloads. Benchmark read counts with synthetic data; offline evidence never proves live activation.
+
+## 2026-10-13 — Shared summary semantics
+- When a paired source/formatter summary uses a maximum to tolerate missing formatter replies, apply the requested maximum independently to sent and retained. Keep per-author accounting and cap enforcement separate; test deletion switching which account supplies the retained maximum.

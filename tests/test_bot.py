@@ -213,6 +213,102 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(live), 1)
         self.assertEqual(len(attempts), 1)
 
+    async def test_dashboard_pair_uses_max_counts_and_saucy_cap(self):
+        pistol, saucy = 142822767497052161, 647368715742216193
+        for batch, (pistol_count, saucy_count) in enumerate(((5, 3), (5, 7), (7, 7)), 1):
+            with self.subTest(pistol=pistol_count, saucy=saucy_count):
+                await self.engine.reset()
+                self.now = self.now.replace(second=self.now.second + 1)
+                await self.engine.set_user_cap(pistol, 2)
+                await self.engine.set_user_cap(saucy, 3)
+                start = batch * 1000
+                await self.send_messages(pistol_count, user=pistol, start=start)
+                await self.send_messages(saucy_count, user=saucy, start=start + 20)
+                self.assertEqual(bot.render_dashboard(self.engine), [
+                    '📊 Daily tweet summary\n'
+                    f'🐦 {max(pistol_count, saucy_count)} tweets sent · 📥 3 retained · 🎯 cap 3 · since reset\n'])
+                self.assertEqual(self.row(pistol)[2:], (pistol_count, 2))
+                self.assertEqual(self.row(saucy)[2:], (saucy_count, 3))
+
+    async def test_dashboard_pair_includes_uncapped_input_and_keeps_other_rows(self):
+        pistol, saucy = 142822767497052161, 647368715742216193
+        await self.engine.set_user_cap(saucy, 50)
+        await self.engine.set_user_cap(7, 50)
+        await self.send_messages(5, user=pistol)
+        await self.send_messages(3, user=saucy, start=10)
+        await self.send_messages(2, start=20)
+        self.assertEqual(bot.render_dashboard(self.engine), [
+            '📊 Daily tweet summary\n'
+            '🐦 2 tweets sent · 📥 2 retained · 🎯 cap 50\n'
+            '🐦 5 tweets sent · 📥 5 retained · 🎯 cap 50\n'])
+
+    async def test_dashboard_pair_falls_back_to_pistol_personal_cap(self):
+        pistol, saucy = 142822767497052161, 647368715742216193
+        await self.engine.set_user_cap(pistol, 50)
+        await self.send_messages(2, user=pistol)
+        await self.send_messages(4, user=saucy, start=10)
+        self.assertEqual(bot.render_dashboard(self.engine), [
+            '📊 Daily tweet summary\n'
+            '🐦 4 tweets sent · 📥 4 retained · 🎯 cap 50\n'])
+
+    async def test_dashboard_pair_includes_retained_when_capped_saucy_is_missing(self):
+        pistol, saucy = 142822767497052161, 647368715742216193
+        await self.engine.set_user_cap(saucy, 50)
+        await self.send_messages(1, user=pistol)
+        self.assertEqual(bot.render_dashboard(self.engine), [
+            '📊 Daily tweet summary\n'
+            '🐦 1 tweet sent · 📥 1 retained · 🎯 cap 50\n'])
+
+    async def test_dashboard_pair_reset_reload_deletion_and_midnight(self):
+        pistol, saucy = 142822767497052161, 647368715742216193
+        await self.engine.set_user_cap(saucy, 50)
+        await self.send_messages(5, user=pistol)
+        await self.send_messages(3, user=saucy, start=10)
+        await self.engine.removed([1])
+        self.assertIn('5 tweets sent', bot.render_dashboard(self.engine)[0])
+        await self.engine.reset(pistol)
+        self.assertEqual(bot.render_dashboard(self.engine), [
+            '📊 Daily tweet summary\n'
+            '🐦 3 tweets sent · 📥 3 retained · 🎯 cap 50 · since reset\n'])
+        reloaded = bot.Tracker(self.store, channel_id=123, cap=50,
+                               timezone_name='America/Toronto', now=lambda: self.now,
+                               choose=lambda ids: ids[0], delete=self.delete)
+        self.assertEqual(bot.render_dashboard(reloaded), bot.render_dashboard(self.engine))
+        await self.engine.reset(saucy)
+        self.assertIn('0 tweets sent', bot.render_dashboard(self.engine)[0])
+        self.now = self.now.replace(day=3)
+        await self.engine.rollover()
+        self.assertEqual(bot.render_dashboard(self.engine), [
+            '📊 Daily tweet summary\nNo tweets from users with personal caps today.\n'])
+
+    async def test_dashboard_pair_retained_max_tracks_deletions_without_reducing_sent(self):
+        pistol, saucy = 142822767497052161, 647368715742216193
+        await self.engine.set_user_cap(pistol, 50)
+        await self.engine.set_user_cap(saucy, 50)
+        await self.send_messages(48, user=pistol)
+        await self.send_messages(44, user=saucy, start=100)
+        self.assertEqual(bot.render_dashboard(self.engine), [
+            '📊 Daily tweet summary\n'
+            '🐦 48 tweets sent · 📥 48 retained · 🎯 cap 50\n'])
+        await self.engine.removed([1, 2, 3, 4, 5])
+        self.assertEqual(bot.render_dashboard(self.engine), [
+            '📊 Daily tweet summary\n'
+            '🐦 48 tweets sent · 📥 44 retained · 🎯 cap 50\n'])
+        await self.engine.removed(list(range(100, 144)))
+        self.assertEqual(bot.render_dashboard(self.engine), [
+            '📊 Daily tweet summary\n'
+            '🐦 48 tweets sent · 📥 43 retained · 🎯 cap 50\n'])
+        await self.engine.removed(list(range(6, 49)))
+        self.assertEqual(bot.render_dashboard(self.engine), [
+            '📊 Daily tweet summary\n'
+            '🐦 48 tweets sent · 📥 0 retained · 🎯 cap 50\n'])
+
+    async def test_dashboard_pair_without_personal_caps_is_omitted(self):
+        await self.send_messages(2, user=142822767497052161)
+        await self.send_messages(1, user=647368715742216193, start=10)
+        self.assertEqual(bot.render_dashboard(self.engine), [
+            '📊 Daily tweet summary\nNo tweets from users with personal caps today.\n'])
+
     async def test_dashboard_splits_long_output_at_discord_limit(self):
         for i in range(100):
             await self.engine.process(i + 1, i + 10, 'User' + 'x' * 100, self.now)
